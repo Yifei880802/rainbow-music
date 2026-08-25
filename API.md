@@ -20,6 +20,8 @@ Rainbow 的完整 HTTP API 参考。所有接口以 `/api/v1` 为前缀，返回
 - [6. 实时事件 SSE](#6-实时事件-sse)
 - [7. 状态 Status](#7-状态-status)
 - [8. 歌单 Playlists](#8-歌单-playlists)
+- [9. 用户与 FN ID 身份 Me / Gateway（v0.2.1）](#9-用户与-fn-id-身份-me--gatewayv021)
+- [10. 本地音乐库 Library（v0.2.1）](#10-本地音乐库-libraryv021)
 - [错误约定](#错误约定)
 - [完整调用示例：搜索→下载→追踪](#完整调用示例搜索下载追踪)
 
@@ -45,11 +47,13 @@ X-API-Key: ro_xxxxxxxxxxxxxxxx
 Authorization: Bearer ro_xxxxxxxxxxxxxxxx
 ```
 
-**免鉴权白名单**（`auth.enabled=true` 时也放行）：`/login.html`、`/login.js`、`/style.css`、`/favicon.ico`、`POST /api/v1/auth/login`、`GET /api/v1/auth/status`。
+**免鉴权白名单**（`auth.enabled=true` 时也放行）：`/login.html`、`/login.js`、`/style.css`、`/favicon.ico`、`POST /api/v1/auth/login`、`POST /api/v1/auth/gateway-login`（仅网关实例存在）、`GET /api/v1/auth/status`。
 
 **未授权行为**：`/api/*` 返回 `401 JSON`；其它路径 `302` 跳转 `/login.html`。
 
 > `auth.enabled: false` 时全部放行，适合纯内网可信环境。
+>
+> **v0.2.1 多用户说明**：经 fnOS 网关入口进入的请求携带网关注入的可信身份（`X-Trim-*` 头，仅网关 Unix Socket 实例采信，TCP 端口零采信防伪造）；每个用户有自己的 `uid`，歌单/播放历史/收藏/本地曲库均按 uid 隔离。端口直连与 API Key 通道的身份为管理员（uid=`legacy`，v0.2.0 语义不变）。详见 [docs/FNOS-DEPLOY.md](docs/FNOS-DEPLOY.md)。
 
 ---
 
@@ -76,18 +80,40 @@ curl -c cookie.txt -X POST http://127.0.0.1:23330/api/v1/auth/login \
   -d '{"username":"admin","password":"admin"}'
 ```
 
+### POST /api/v1/auth/gateway-login
+
+**仅网关实例**（fnOS 统一网关 Unix Socket，`RO_GATEWAY_SOCK` 启用时）存在；TCP 实例上请求返回 `404`（防伪造红线）。无需请求体。
+
+读取网关注入的可信身份头 `X-Trim-Userid` / `X-Trim-Username` / `X-Trim-Isadmin`，首次见到则建档（users 表），签发携带身份的 session Cookie。
+
+**响应 200**：
+```json
+{ "ok": true, "user": { "uid": "1000", "username": "alice", "isAdmin": false } }
+```
+（并 `Set-Cookie: ro_sess=...`，7 天）
+
+**错误**：`401` `{ "error": "缺少有效网关身份头（X-Trim-Userid / X-Trim-Username）" }`（uid 非数字/用户名空白同此）；`404`（TCP 实例，路由不存在）。
+
 ### POST /api/v1/auth/logout
 
 登出，清除会话 Cookie。响应 `{ "ok": true }`。
 
 ### GET /api/v1/auth/status
 
-查询鉴权状态（**免鉴权**，用于前端判断是否需登录）。
+查询鉴权状态（**免鉴权**，用于前端判断是否需登录；也是登录页探测网关模式的入口）。
 
 **响应 200**：
 ```json
-{ "enabled": true, "authenticated": false, "passwordConfigured": true }
+{
+  "enabled": true,
+  "authenticated": true,
+  "passwordConfigured": true,
+  "mode": "gateway",
+  "user": { "uid": "1000", "username": "alice", "isAdmin": false }
+}
 ```
+
+> v0.2.1 新增字段（只增不改）：`mode` = `gateway` | `local`（请求落在哪个实例，前端据此切换 FN ID 直达卡/账密表单）；`user` = 已认证时的身份（未认证为 `null`；端口直连 admin 为 `{"uid":"legacy","username":"admin","isAdmin":true}`）。
 
 ---
 
@@ -623,6 +649,7 @@ Server-Sent Events 事件流。`Content-Type: text/event-stream`，服务端每 
 | `smoke:failed` | 冒烟测试失败 |
 | `scrape:update` | 单任务刮削状态变更（含 `taskId`/`status`/`fieldsWritten`/`source`/`error`）|
 | `scrape:progress` | 批量刮削进度（`{ "done": n, "total": m }`）|
+| `scan:progress` | 本地音乐库扫描进度（v0.2.1，**按 uid 定向推送**：仅同用户连接收到）：`{ "phase": "walk\|meta\|done", "scanned": n, "total": m\|null, "added": n, "updated": n, "removed": n, "currentRoot": "...\|null", "metaDone": n, "last": {...} }`，节流约 500ms；`done` 后附带 `last` 最近一轮结果 |
 
 每条事件格式：`event: <name>\ndata: <json>\n\n`。
 
@@ -749,6 +776,186 @@ curl -X PUT "$BASE/api/v1/playlists/$PID/items/order" \
 
 ---
 
+## 9. 用户与 FN ID 身份 Me / Gateway（v0.2.1）
+
+多用户个性化端点：全部按请求身份的 `uid` 隔离（网关用户各自独立；端口直连 admin / API Key 通道 = `uid: "legacy"`）。鉴权关闭时按 legacy/admin 兑底（与 v0.2.0 行为一致）。
+
+端点总览：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/v1/me` | 当前身份 `{ uid, username, isAdmin, mode }` |
+| `GET /api/v1/me/scan-roots` | 本地库扫描根：available（容器可选项）/ selected（该 uid 勾选）|
+| `PUT /api/v1/me/scan-roots` | 全量替换勾选 `{ paths: [...] }`（每个 path 必须 ∈ available）|
+| `POST /api/v1/me/history` | 播放历史上报 `{ track: <任意 JSON> }`（每 uid 保最近 200 条）|
+| `GET /api/v1/me/history?limit=50` | 播放历史列表（played_at 倒序）|
+| `POST /api/v1/me/favorites` | 新增收藏 `{ kind, ref }` |
+| `GET /api/v1/me/favorites` | 该 uid 全部收藏 |
+| `DELETE /api/v1/me/favorites/:kind/:ref` | 移除收藏 |
+
+### GET /api/v1/me
+
+**响应 200**：
+```json
+{ "uid": "legacy", "username": "admin", "isAdmin": true, "mode": "local" }
+```
+
+`mode` 取决于请求落在哪个实例（`local` = TCP 端口 / `gateway` = 网关 socket）。前端启动时用它拉 uid（localStorage 键按 uid 前缀隔离）。
+
+### GET /api/v1/me/scan-roots
+
+**响应 200**：
+```json
+{
+  "available": ["/app/data/downloads", "/app/data/scan/1"],
+  "selected": [
+    { "path": "/app/data/downloads", "enabled": true, "createdAt": 1769000000000 }
+  ]
+}
+```
+
+`available` 来自容器环境变量 `RO_SCAN_ROOTS`（`:` 分隔；未设置时仅默认 `/app/data/downloads`）——由 .fpk 安装向导「音乐库扫描目录」渲染进 compose，见 [docs/FNOS-DEPLOY.md](docs/FNOS-DEPLOY.md)。
+
+### PUT /api/v1/me/scan-roots
+
+**请求体**：`{ "paths": ["/app/data/downloads"] }` —— 全量替换该 uid 的勾选（空数组 = 清空，合法；自动去重）。
+
+**响应 200**：同 GET 结构。
+
+**错误**：
+```jsonc
+// 400 paths 非数组
+{ "error": "paths (array) is required" }
+// 400 含不在 available 集合中的路径（越界防护）
+{ "error": "path not in available scan roots", "invalid": ["/vol1/music"], "available": ["/app/data/downloads"] }
+```
+
+### POST /api/v1/me/history
+
+**请求体**：`{ "track": { ... } }` —— track 为任意 JSON 值（前端传播放中的曲目对象，后端原样存档；序列化后 ≤ 64KB）。前端 debounce/节流上报，无需高频。
+
+**响应 200**：`{ "ok": true, "keep": 200 }`（keep = 每 uid 保留条数上限）
+
+**错误**：`400` track 缺失/非 JSON 可序列化/超长。
+
+### GET /api/v1/me/history?limit=50
+
+`limit` clamp 1..200（默认 50），按 `played_at` 倒序。
+
+**响应 200**：
+```json
+{
+  "history": [
+    { "id": 1, "track": { "name": "晴天", "singer": "周杰伦" }, "played_at": 1769000000000 }
+  ]
+}
+```
+
+### POST /api/v1/me/favorites
+
+**请求体**：`{ "kind": "track", "ref": "kw:107811" }` —— `kind` ∈ `track | playlist | square`；`ref` 非空字符串 ≤1024 字符（同一 `(uid, kind, ref)` 重复收藏幂等）。
+
+**响应 200**：`{ "ok": true, "added": true }`（added=false 表示已存在）
+
+### GET /api/v1/me/favorites
+
+**响应 200**：
+```json
+{ "favorites": [ { "kind": "track", "ref": "kw:107811", "createdAt": 1769000000000 } ] }
+```
+
+### DELETE /api/v1/me/favorites/:kind/:ref
+
+**响应 200**：`{ "ok": true, "deleted": true }`（deleted=false 表示本就不存在；kind 非法 → 400）
+
+---
+
+## 10. 本地音乐库 Library（v0.2.1）
+
+扫描 NAS 挂载目录里已有的音频文件入库、分页浏览、流式播放。所有端点按请求身份 `uid` 隔离（各用户各自的库）。支持格式：mp3 / flac / m4a / ogg / opus / wav / aac。
+
+端点总览：
+
+| 端点 | 说明 |
+|---|---|
+| `POST /api/v1/library/scan` | 启动扫描（202 异步；per-uid 互斥 409；未配置扫描根 400）|
+| `GET /api/v1/library/scan/status` | `{ scanning, last?, progress? }`（进程内存态）|
+| `GET /api/v1/library/tracks` | 分页列表（limit/offset/q/artist/album/sort）|
+| `GET /api/v1/library/tracks/:id/stream` | 音频流（支持 Range，206 分段；进度条拖动）|
+| `GET /api/v1/library/tracks/:id/cover` | 内嵌封面图（缓存优先，无则现场解析；200 image 或 404）|
+| `DELETE /api/v1/library/tracks/:id` | 只删索引行（不动音频文件），顺带清封面缓存 |
+
+### POST /api/v1/library/scan
+
+对该 uid 已勾选的扫描根（`me/scan-roots`）启动一轮两阶段扫描：阶段一遍历目录（只收 path/size/mtime 三元组，与 SQLite 快照 diff：未变跳过、消失文件连续 2 轮才删）；阶段二标签补全（worker 池，标题/艺人/专辑/时长，封面落 `data/covers/{uid}/`）。异步执行，进度经 SSE `scan:progress` 推送（按 uid 定向）。
+
+**响应 202**：`{ "ok": true, "jobId": "<id>" }`
+
+**错误**：
+```jsonc
+// 400 未勾选任何扫描根
+{ "error": "未配置扫描根，请先通过 GET/PUT /api/v1/me/scan-roots 选择" }
+// 409 该 uid 已有扫描在途
+{ "error": "该用户已有扫描在进行中，请稍后再试" }
+```
+
+### GET /api/v1/library/scan/status
+
+**响应 200**：
+```json
+{
+  "scanning": true,
+  "progress": {
+    "phase": "walk",
+    "scanned": 120, "total": 340, "added": 12, "updated": 0, "removed": 0,
+    "currentRoot": "/app/data/scan/1", "metaDone": 0
+  },
+  "last": { "finishedAt": 1769000000000, "total": 340, "added": 300, "updated": 12, "removed": 3 }
+}
+```
+
+`scanning=false` 时无 `progress`；从未扫描过时无 `last`；`last.error` 存在表示上一轮异常结束。
+
+### GET /api/v1/library/tracks
+
+Query：`limit`（clamp 1..500，默认 100）、`offset`（默认 0）、`q`（title/artist LIKE 模糊）、`artist` / `album`（精确）、`sort` ∈ `updated`（默认，入库时间倒序）| `artist` | `album`。
+
+**响应 200**：
+```json
+{
+  "tracks": [
+    {
+      "id": 1, "title": "晴天", "artist": "周杰伦", "album": "叶惠美",
+      "durationMs": 269000, "format": "flac", "size": 28945126,
+      "coverState": 1, "metaState": 1, "updatedAt": 1769000000000
+    }
+  ],
+  "total": 1, "offset": 0, "limit": 100
+}
+```
+
+> `coverState`/`metaState`：0 未探测 / 1 有 / 2 定格无。键集分页（`total` 为当前过滤条件总数）。
+
+### GET /api/v1/library/tracks/:id/stream
+
+音频流：无 Range 头 → `200` 全量（`Accept-Ranges: bytes`）；带 `Range: bytes=a-b` → `206` 分段（`Content-Range`，支持拖动/续拖，语义同 `GET /api/v1/play/:taskId`）。路径安全：解析后必须位于「该 uid 扫描根 ∪ download.dir」内。
+
+**错误**：`404` track not found（含路径越界）；`410` 文件已被移动/删除；`416` Range 不可满足。
+
+### GET /api/v1/library/tracks/:id/cover
+
+内嵌封面（flac PICTURE / mp3 APIC）：缓存 `data/covers/{uid}/{id}.jpg` 优先，未缓存现场解析后写缓存；`Cache-Control: private, max-age=86400`。
+
+**错误**：`404` 无封面可用（含已定格 coverState=2 的免重复解析）。
+
+### DELETE /api/v1/library/tracks/:id
+
+只删索引行（音频文件不动；下次扫描若文件仍在会重新出现），best-effort 清封面缓存。
+
+**响应 200**：`{ "ok": true, "deleted": true }`（`404` 不存在）
+
+---
+
 ## 错误约定
 
 所有错误响应统一为 JSON：`{ "error": "<描述>" }`，部分附带 `valid` 字段列出合法取值。
@@ -757,11 +964,13 @@ curl -X PUT "$BASE/api/v1/playlists/$PID/items/order" \
 |---|---|
 | `400` | 参数缺失或非法 |
 | `401` | 未授权（未登录 / API Key 无效）|
-| `404` | 资源不存在（任务/音源）|
-| `409` | 状态冲突（任务不可重试/取消/未完成不可播放）|
-| `410` | 资源已消失（播放时任务文件缺失）|
+| `403` | 需要管理员权限（v0.2.1：网关普通成员调用全局管理接口——settings PATCH/apikey、音源启停重载删除、刮削批量、`health/smoke/run`、通知测试）|
+| `404` | 资源不存在（任务/音源；TCP 实例上的 gateway-login 亦为 404）|
+| `409` | 状态冲突（任务不可重试/取消/未完成不可播放；同 uid 扫描进行中）|
+| `410` | 资源已消失（播放时任务文件缺失；库曲目文件被移动/删除）|
 | `416` | Range 不可满足（播放接口）|
-| `201` | 创建成功（下载任务/音源导入）|
+| `201` | 创建成功（下载任务/音源导入/歌单）|
+| `202` | 异步任务已启动（冒烟测试/本地库扫描）|
 
 ---
 
