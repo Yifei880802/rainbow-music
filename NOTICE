@@ -1,0 +1,27 @@
+Rainbow — 飞牛 NAS 音乐下载服务
+Copyright 2026 Rainbow Contributors
+
+本产品包含基于上游开源项目二次开发的软件。
+
+## 上游致谢
+
+本项目 **Rainbow** 是基于 [leizi914599611-boop/ro](https://github.com/leizi914599611-boop/ro)
+（**Apache-2.0** 许可证）的二次开发，面向飞牛 NAS 场景的音乐下载工具。
+上游项目版权归其作者所有。在此诚挚感谢上游项目及其所有开源贡献者。
+
+## 许可证
+
+本项目以 Apache License 2.0 分发，许可证全文见同目录 [LICENSE](./LICENSE)。
+依 Apache-2.0 要求：本项目修改不影响原项目的许可证归属，
+上游许可证文本与版权声明随本项目一同保留。
+
+## 相对上游的修改点（持续更新）
+
+- **品牌化**：对外名称 `Ro` / `Ro 音乐` / `ro-music` → `Rainbow` / `Rainbow 音乐下载` / `rainbow-music`
+  - `server/package.json`：包名 `ro-server` → `rainbow-server`，description 同步更新
+  - `compose.yaml`：服务名/容器名 `ro` → `rainbow`，镜像名 `ro-music:latest` → `rainbow-music`
+  - `web/index.html` / `web/login.html`：页面标题与文案
+  - 启动日志、告警与测试通知的默认文案
+- **交付形态**：新增 `.fpk` 打包层（`fpk/` + `scripts/build-fpk.sh`）与 GitHub Actions 发布流水线，面向 FnOS 应用中心交付；镜像 tag 采用 `vX.Y.Z-rN` 修订号策略，不再使用 `latest`
+- **首次启动体验**：无配置文件时自动生成配置并随机生成强密码（禁止沿用 admin/admin），适配 fpk 安装向导场景
+- **未改动**：业务逻辑、路由路径（`/api/v1/*`）、API 契约、配置项与环境变量（`RO_*`）、Cookie/API Key 前缀（`ro_sess` / `ro_`）均保持与上游一致
