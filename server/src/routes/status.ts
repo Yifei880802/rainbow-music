@@ -11,7 +11,7 @@ export async function statusRoutes(app: FastifyInstance): Promise<void> {
     const count = (s: string): number => tasks.filter((t) => t.status === s).length
     return {
       app: 'ro',
-      version: '0.2.0',
+      version: '0.2.1',
       uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
       node: process.version,
       memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
