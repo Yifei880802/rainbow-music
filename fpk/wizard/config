@@ -27,6 +27,13 @@
       },
       {
         "type": "text",
+        "field": "wizard_scan_dirs",
+        "label": "音乐库扫描目录（可选）",
+        "helpText": "NAS 上的绝对路径，可填多个（英文逗号分隔），目录必须已存在。留空则保持当前扫描目录不变；填入新值会替换全部旧目录（不存在目录自动跳过），提交后重启容器生效。",
+        "rules": []
+      },
+      {
+        "type": "text",
         "field": "wizard_port",
         "label": "服务端口",
         "helpText": "留空则保持当前端口不变",

@@ -171,6 +171,66 @@ YAML
     log_info "已生成初始配置 ${CONFIG_FILE}（端口=${port} 下载目录=${ddir}）"
 }
 
+# ---------- 音乐库扫描目录渲染（v0.2.1：统一网关 + 本地音乐库） ----------
+
+# 向导扫描目录选择的持久化记录：落在 ${TRIM_PKGETC}（飞牛托管 etc，升级不丢），
+# 供 upgrade_callback 在无向导值时恢复用户选择（老安装升级后同样获得新挂载）
+SCAN_DIRS_FILE="${TRIM_PKGETC:-}/scan-dirs.conf"
+
+parse_scan_dirs() {
+    # 向导输入（英文/全角逗号分隔的 NAS 绝对路径）规范化：
+    # 逐行输出，去首尾空白、去空行、去重（保持首次出现顺序）
+    printf '%s' "${1:-}" \
+        | sed -e 's/，/,/g' \
+        | tr ',' '\n' \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+        | awk 'NF && !seen[$0]++'
+}
+
+render_scan_mounts() {
+    # 渲染 compose 的扫描目录挂载行与 RO_SCAN_ROOTS 环境变量：
+    #   - 传参（可为空串）：以向导值为准，并把原始输入持久化到 ${SCAN_DIRS_FILE}
+    #   - 不传参（升级等无向导场景）：回读持久化记录；无记录则渲染默认（仅下载目录）
+    # 幂等：先清理历史渲染的挂载行，再按锚点重建，同值重复渲染输出完全一致；
+    #       RO_SCAN_ROOTS 按行前缀整行替换，兼容占位符与已渲染两种状态
+    # 容错：目录不存在仅 log_info 警告并跳过，绝不 exit 1（防应用起不来）
+    compose_file_ok || return 0
+    local raw="" dir i=0
+    local roots="/app/data/downloads"
+    if [ "$#" -ge 1 ]; then
+        raw="$1"
+        if [ -n "${TRIM_PKGETC:-}" ]; then
+            printf '%s\n' "$raw" > "$SCAN_DIRS_FILE" 2>/dev/null || true
+        fi
+    elif [ -f "$SCAN_DIRS_FILE" ]; then
+        raw=$(sed -n '1p' "$SCAN_DIRS_FILE" 2>/dev/null || true)
+    fi
+    local vol_tmp="${COMPOSE_FILE}.scanvols.tmp"
+    : > "$vol_tmp"
+    while IFS= read -r dir || [ -n "$dir" ]; do
+        [ -n "$dir" ] || continue
+        if [ -d "$dir" ]; then
+            i=$((i+1))
+            printf '      - %s:/app/data/scan/%s\n' "$dir" "$i" >> "$vol_tmp"
+            roots="${roots}:/app/data/scan/${i}"
+        else
+            log_info "音乐库扫描目录不存在，跳过：${dir}"
+        fi
+    done < <(parse_scan_dirs "$raw")
+    # 幂等重建：先删历史挂载行（仅 volumes 段的 - xxx:/app/data/scan/N 形态，
+    # 不会误伤 RO_SCAN_ROOTS 值行），再在锚点注释行后插入当前挂载集
+    sed -i.bak '/^[[:space:]]*- .*:\/app\/data\/scan\/[0-9][0-9]*$/d' "$COMPOSE_FILE"
+    rm -f "${COMPOSE_FILE}.bak"
+    if [ -s "$vol_tmp" ]; then
+        sed -i.bak "/__WIZ_SCAN_VOLUMES__/r ${vol_tmp}" "$COMPOSE_FILE"
+        rm -f "${COMPOSE_FILE}.bak"
+    fi
+    rm -f "$vol_tmp"
+    sed -i.bak "s|^\([[:space:]]*\)RO_SCAN_ROOTS:.*|\1RO_SCAN_ROOTS: \"${roots}\"|" "$COMPOSE_FILE"
+    rm -f "${COMPOSE_FILE}.bak"
+    log_info "音乐库扫描根渲染完成：RO_SCAN_ROOTS=${roots}（额外挂载 ${i} 个目录）"
+}
+
 ensure_data_dirs() {
     # 幂等：数据目录落在 ${TRIM_PKGVAR}（飞牛托管，升级/重启不丢）
     local base="${TRIM_PKGVAR:?}"

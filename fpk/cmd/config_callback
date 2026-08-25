@@ -5,6 +5,7 @@
 # 应用设置页提交后执行：按向导新值热更新 config.yaml（只改提交的字段，保留其余）。
 #   - 密码/目录走 yaml_dquote_escape + sed RHS 双重转义（与 install_callback 一致）
 #   - 下载目录用 awk 区块锚定改 download.dir（不误伤同缩进的 sources.dir）
+#   - v0.2.1：扫描目录非空时重渲染 compose 挂载与 RO_SCAN_ROOTS（留空=保持不变）
 #   - 有变更则重启容器生效；末尾幂等补齐数据目录
 
 set -eu
@@ -41,6 +42,12 @@ if [ -n "${wizard_download_dir:-}" ]; then
         { print }
     ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
     mkdir -p "$wizard_download_dir" 2>/dev/null || true
+    changed=1
+fi
+if [ -n "${wizard_scan_dirs:-}" ]; then
+    # v0.2.1：填了新扫描目录才重渲染（留空=保持当前挂载不变）；填入的新值
+    # 替换全部旧目录（不存在目录仅告警跳过），并同步更新持久化记录
+    render_scan_mounts "$wizard_scan_dirs"
     changed=1
 fi
 if [ "$changed" = "1" ] && compose_file_ok; then

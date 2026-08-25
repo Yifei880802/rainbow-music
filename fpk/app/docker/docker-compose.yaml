@@ -10,6 +10,12 @@ services:
       RO_SERVER_HOST: 0.0.0.0
       RO_SERVER_PORT: "${TRIM_SERVICE_PORT}"
       RO_DB_DIR: /app/data/db
+      # 统一网关：服务监听该 Unix Socket，fnOS 校验用户会话后经 /app/com.rainbow.music 前缀转发
+      # 并注入 X-Trim-Userid/X-Trim-Username/X-Trim-Isadmin 身份头（WebSocket 同前缀复用）
+      RO_GATEWAY_SOCK: /app/target/rainbow.sock
+      # 本地音乐库扫描根（":" 分隔）：默认含共享下载目录，向导配置的扫描目录由生命周期脚本
+      # 渲染追加为 /app/data/scan/1、/app/data/scan/2 ...（占位符 __WIZ_SCAN_ROOTS__ 由渲染函数整行替换）
+      RO_SCAN_ROOTS: "__WIZ_SCAN_ROOTS__"
     volumes:
       # 配置文件：由 install_callback 从安装向导渲染，落在飞牛托管的 etc 目录
       - ${TRIM_PKGETC}/config.yaml:/app/config.yaml
@@ -20,6 +26,10 @@ services:
       - ${TRIM_PKGVAR}/data/sources:/app/data/sources
       # SQLite 数据库目录（任务记录/歌单），升级不丢数据
       - ${TRIM_PKGVAR}/data/db:/app/data/db
+      # 统一网关 socket 目录：fnOS 将宿主机 ${TRIM_APPDEST} 挂进容器，网关转发
+      # /app/com.rainbow.music -> 该目录下的 rainbow.sock（ui/config 的 gatewaySocket 与之对应）
+      - ${TRIM_APPDEST}:/app/target
+      # __WIZ_SCAN_VOLUMES__ 音乐库扫描目录挂载锚点：渲染时在本行后插入 - <宿主机目录>:/app/data/scan/N（幂等重建）
     # 内存上限保护：与 config.yaml 的 download.memLimitMB 联动，阈值应设为本上限的 ~83%（512m → 400）；
     # 若收紧本上限（如 384m/256m），需同步下调 memLimitMB（320/200），否则内核 OOM kill 会先于护栏生效
     mem_limit: 512m

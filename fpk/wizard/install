@@ -30,6 +30,13 @@
       },
       {
         "type": "text",
+        "field": "wizard_scan_dirs",
+        "label": "音乐库扫描目录（可选）",
+        "helpText": "要导入本地音乐库的 NAS 目录（绝对路径，如 /vol1/1000/music）。可填多个，用英文逗号分隔；目录必须已存在，不存在的会被跳过。留空则只扫描默认下载目录。",
+        "rules": []
+      },
+      {
+        "type": "text",
         "field": "wizard_port",
         "label": "服务端口",
         "initValue": "23330",

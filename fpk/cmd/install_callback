@@ -6,6 +6,8 @@
 #   - 密码为空 -> 写 $TRIM_TEMP_LOGFILE 后失败退出
 #   - 密码/目录经 yaml_dquote_escape + sed RHS 双重转义，双引号标量注入
 #   - 幂等：config.yaml 已存在则不覆盖
+#   - v0.2.1：渲染音乐库扫描目录挂载与 RO_SCAN_ROOTS（目录不存在仅告警跳过，
+#     不阻断安装），并把向导选择持久化到 ${TRIM_PKGETC}/scan-dirs.conf 供升级恢复
 
 set -eu
 
@@ -13,5 +15,6 @@ set -eu
 source "$(cd "$(dirname "$0")" && pwd)/_common"
 
 render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
+render_scan_mounts "${wizard_scan_dirs:-}"
 ensure_data_dirs
 exit 0

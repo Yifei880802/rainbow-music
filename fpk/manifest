@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.0
+version=0.2.1
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录，卸载不丢数据。
 source=thirdparty
@@ -13,4 +13,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=23330
 checkport=true
 ctl_stop=true
-changelog=首个飞牛 fnOS 发布版本。
+changelog=新增统一网关入口（FN ID 免密登录、多用户可见）与本地音乐库：安装向导可配置 NAS 扫描目录，下载内容与扫描曲目统一管理；保留原端口直连入口与 admin 账密登录，老版本数据与配置升级后完整保留。
