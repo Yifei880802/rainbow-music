@@ -18,13 +18,13 @@ interface KgSearchItem {
   specialid: string | number; playcount: number; nickname: string; specialname: string
   publishtime: string; imgurl: string; intro: string; songcount: number
 }
-interface KgHashItem { hash: string }
+export interface KgHashItem { hash: string }
 interface KgAudioInfo {
   audio_id: string | number; hash: string; timelength: number
   filesize: string; filesize_320: string; hash_320: string
   filesize_flac: string; hash_flac: string; filesize_high: string; hash_high: string
 }
-interface KgGatewaySong {
+export interface KgGatewaySong {
   audio_info: KgAudioInfo; author_name: string; songname: string
   album_info: { album_name: string; album_id: string | number }
 }
@@ -39,8 +39,9 @@ function parseHtmlDesc(html: string): string | null {
   return decodeName(afterStr.substring(0, index))
 }
 
-/** gateway 批量取音质信息（对齐上游 createTask），每 100 首一批 */
-async function fetchAudioInfos(hashList: KgHashItem[]): Promise<KgGatewaySong[]> {
+/** gateway 批量取音质信息（对齐上游 createTask），每 100 首一批
+ *  #60 导出复用：kg/toplist.ts 榜单曲目同样需要 hash → 音质档补齐 */
+export async function fetchAudioInfos(hashList: KgHashItem[]): Promise<KgGatewaySong[]> {
   const base = {
     area_code: '1', show_privilege: 1, show_album_info: '1', is_publish: '',
     appid: 1005, clientver: 11451, mid: '1', dfid: '-', clienttime: Date.now(),
@@ -70,7 +71,7 @@ async function fetchAudioInfos(hashList: KgHashItem[]): Promise<KgGatewaySong[]>
   return results.flat()
 }
 
-function filterData2(rawList: KgGatewaySong[]): MusicInfo[] {
+export function filterData2(rawList: KgGatewaySong[]): MusicInfo[] {
   const ids = new Set<string | number>()
   const list: MusicInfo[] = []
   for (const item of rawList) {

@@ -85,6 +85,56 @@ export const playlistStore = {
     return initDb().prepare('SELECT * FROM playlists WHERE id = ?').get(id) as PlaylistRow | undefined
   },
 
+  /** 按名查重（#66 导入端点重名后缀用）；同名多个时取任一存在性判定即 */
+  existsByName(name: string): boolean {
+    ensureTables()
+    return !!initDb().prepare('SELECT 1 FROM playlists WHERE name = ? LIMIT 1').get(name)
+  },
+
+  /**
+   * #66 批量导入：事务内建单 + 逐首插入（一次 fs 同步提交，50 首毫秒级）。
+   * 顺序保证：与 reorder 同款手法——created_at 每行 +1 严格递增
+   * （items() 按 created_at ASC 展示，同毫秒批量插入会导致乱序）；
+   * 同批 (platform, songmid) 重复由唯一索引 INSERT OR IGNORE 吸收 → skippedCount。
+   */
+  createWithItems(
+    name: string,
+    description: string,
+    items: { platform: string; musicInfo: MusicInfo }[],
+  ): { row: PlaylistRow; addedCount: number; skippedCount: number } {
+    ensureTables()
+    const db = initDb()
+    const now = Date.now()
+    const row: PlaylistRow = { id: randomUUID(), name, description, created_at: now, updated_at: now }
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO playlist_items
+       (id, playlist_id, platform, songmid, name, singer, album, music_info, created_at)
+       VALUES (@id, @playlist_id, @platform, @songmid, @name, @singer, @album, @music_info, @created_at)`,
+    )
+    let added = 0
+    db.transaction(() => {
+      db.prepare(
+        'INSERT INTO playlists (id, name, description, created_at, updated_at) VALUES (@id, @name, @description, @created_at, @updated_at)',
+      ).run(row)
+      items.forEach((it, i) => {
+        const m = it.musicInfo
+        const res = ins.run({
+          id: randomUUID(),
+          playlist_id: row.id,
+          platform: it.platform,
+          songmid: String(m.songmid),
+          name: m.name,
+          singer: m.singer,
+          album: m.albumName ?? '',
+          music_info: JSON.stringify(m),
+          created_at: now + i,
+        })
+        if (res.changes > 0) added++
+      })
+    })()
+    return { row, addedCount: added, skippedCount: items.length - added }
+  },
+
   rename(id: string, name: string, description?: string): boolean {
     ensureTables()
     const p = this.get(id)
@@ -135,5 +185,30 @@ export const playlistStore = {
     ensureTables()
     const res = initDb().prepare('DELETE FROM playlist_items WHERE id = ? AND playlist_id = ?').run(itemId, playlistId)
     return res.changes > 0
+  },
+
+  /**
+   * #57 按给定 itemIds 顺序重排歌单曲目（调用方需先校验集合与歌单存在）。
+   *
+   * 取舍（零 schema 改动方案）：items() 的展示顺序 = created_at ASC，因此重排
+   * 通过事务内按新顺序重写 created_at 实现（基准 = max(now, 现有最大 created_at)+1，
+   * 每行 +1ms 保证严格递增，且后续 addItem（Date.now()）自然追加到末尾）。
+   * - 幂等：相同 itemIds 输入产生相同顺序，重复 PUT 无副作用；
+   * - created_at 未在任何 API 响应/前端逻辑中暴露（GET /:id 仅回传
+   *   id/platform/songmid/name/singer/album/musicInfo），语义损失可接受；
+   * - 相比加 position 列（ALTER + 全量回填 + addItem 维护 MAX+1）省去已部署
+   *   数据库的迁移路径，排序唯一性由同事务顺序写入保证。
+   */
+  reorder(playlistId: string, itemIds: string[]): void {
+    ensureTables()
+    const db = initDb()
+    const maxRow = db.prepare('SELECT MAX(created_at) AS m FROM playlist_items WHERE playlist_id = ?')
+      .get(playlistId) as { m: number | null }
+    const base = Math.max(Date.now(), maxRow.m ?? 0) + 1
+    const upd = db.prepare('UPDATE playlist_items SET created_at = ? WHERE id = ? AND playlist_id = ?')
+    db.transaction(() => {
+      itemIds.forEach((id, i) => upd.run(base + i, id, playlistId))
+      db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(Date.now(), playlistId)
+    })()
   },
 }

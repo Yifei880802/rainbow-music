@@ -94,14 +94,17 @@ export default {
       headers: { Origin: 'https://y.qq.com', Referer: `https://y.qq.com/n/yqq/playsquare/${id}.html` },
     }).promise
     if (body.code !== 0) throw new Error('获取QQ音乐歌单详情失败')
-    const cdlist = body.cdlist[0]!
+    // #67 广场容错：推荐位 dissid 返回 200+code 0 但 cdlist 为空（无鉴权可破，调研 §1.3
+    // 实测 75% 成功率）——抛清晰错误供前端 toast「该歌单暂时无法获取详情」+ 卡片重试
+    const head = body.cdlist?.[0]
+    if (!head) throw new Error('获取QQ音乐歌单详情失败（推荐位歌单，详情暂不可取）')
     return {
-      list: filterListDetail(cdlist.songlist ?? []),
+      list: filterListDetail(head.songlist ?? []),
       page: 1,
-      limit: (cdlist.songlist?.length ?? 0) + 1,
-      total: cdlist.songlist?.length ?? 0,
+      limit: (head.songlist?.length ?? 0) + 1,
+      total: head.songlist?.length ?? 0,
       source: 'tx',
-      info: { name: cdlist.dissname, img: cdlist.logo, desc: decodeName(cdlist.desc).replace(/<br>/g, '\n'), author: cdlist.nickname, play_count: formatPlayCount(cdlist.visitnum) },
+      info: { name: head.dissname, img: head.logo, desc: decodeName(head.desc).replace(/<br>/g, '\n'), author: head.nickname, play_count: formatPlayCount(head.visitnum) },
     }
   },
 }

@@ -56,8 +56,8 @@ function trimStr(str: unknown): string {
   return typeof str === 'string' ? str.trim() : String(str ?? '')
 }
 
-// 上游 filterStr：去空格与各类标点后比较
-function filterStr(str: unknown): string {
+// 上游 filterStr：去空格与各类标点后比较（#47 起导出，供 scrape-detail.ts 的 MB 兜底复用同一套归一化）
+export function filterStr(str: unknown): string {
   return typeof str === 'string'
     ? str.replace(/\s|'|\.|,|，|&|"|、|\(|\)|（|）|`|~|-|<|>|\||\/|\]|\[|!|！/g, '')
     : String(str ?? '')
