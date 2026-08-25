@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 卸载钩子：uninstall_callback
+#
+# 卸载文件应用后执行：兜底再停一次容器（uninstall_init 已停过一次，compose_down 幂等）。
+# 数据一律保留：${TRIM_PKGVAR} 与 data-share 共享目录不动，
+# 用户可在文件管理器删除共享目录 rainbow-music 完成彻底清理。
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+compose_down
+exit 0
