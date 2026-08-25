@@ -1,0 +1,25 @@
+services:
+  rainbow:
+    image: __FPK_IMAGE__:__FPK_IMAGE_TAG__
+    container_name: rainbow
+    restart: unless-stopped
+    ports:
+      - "${TRIM_SERVICE_PORT}:${TRIM_SERVICE_PORT}"
+    environment:
+      TZ: Asia/Shanghai
+      RO_SERVER_HOST: 0.0.0.0
+      RO_SERVER_PORT: "${TRIM_SERVICE_PORT}"
+      RO_DB_DIR: /app/data/db
+    volumes:
+      # 配置文件：由 install_callback 从安装向导渲染，落在飞牛托管的 etc 目录
+      - ${TRIM_PKGETC}/config.yaml:/app/config.yaml
+      # 下载目录：config.yaml 内 download.dir 可指向 data-share 共享目录 rainbow-music，
+      # 容器内统一挂载到 /app/data/downloads（bind mount 会落到宿主机真实目录）
+      - ${TRIM_PKGVAR}/data/downloads:/app/data/downloads
+      # 音源脚本目录（lx-music .js 音源）
+      - ${TRIM_PKGVAR}/data/sources:/app/data/sources
+      # SQLite 数据库目录（任务记录/歌单），升级不丢数据
+      - ${TRIM_PKGVAR}/data/db:/app/data/db
+    # 内存上限保护：与 config.yaml 的 download.memLimitMB 联动，阈值应设为本上限的 ~83%（512m → 400）；
+    # 若收紧本上限（如 384m/256m），需同步下调 memLimitMB（320/200），否则内核 OOM kill 会先于护栏生效
+    mem_limit: 512m
