@@ -4,12 +4,14 @@
  *   POST   /api/v1/sources/import/content  粘贴/上传脚本内容导入 { name, content }
  *   POST   /api/v1/sources/import/url      在线 URL 导入 { url, name? }
  *   POST   /api/v1/sources/upload          multipart 文件上传
- *   PATCH  /api/v1/sources/:id/enabled     启停 { enabled }
+ *   PATCH  /api/v1/sources/:id/enabled     启停 { enabled }（#56：持久化，重启/热重载后保持）
  *   POST   /api/v1/sources/:id/reload      热重载单个音源
+ *   POST   /api/v1/sources/smoke           #56 一键快速冒烟（同步返回矩阵，≤60s）
  *   DELETE /api/v1/sources/:id             删除
  */
 import type { FastifyInstance } from 'fastify'
 import { sourceEngine, type LoadedSource } from '../core/source-engine/index.js'
+import { runQuickSmoke, isQuickSmokeRunning } from '../core/smoke/quick.js'
 
 function view(s: LoadedSource) {
   return {
@@ -100,6 +102,22 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
       return updated ? view(updated) : reply.code(500).send({ error: 'reload failed' })
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message })
+    }
+  })
+
+  /**
+   * #56 一键快速冒烟：对每个启用音源逐平台 search → musicUrl(128k) → HEAD/Range
+   * 探测，同步返回音源×平台矩阵（音源串行、平台并行≤3、整体预算 60s）。
+   * 与定时全量冒烟（POST /api/v1/health/smoke/run，异步+落库+告警）互斥。
+   */
+  app.post('/api/v1/sources/smoke', async (req, reply) => {
+    if (isQuickSmokeRunning()) return reply.code(409).send({ error: '快速冒烟已在运行中' })
+    try {
+      return await runQuickSmoke()
+    } catch (err) {
+      const msg = (err as Error).message
+      const code = /运行中/.test(msg) ? 409 : 500
+      return reply.code(code).send({ error: msg })
     }
   })
 

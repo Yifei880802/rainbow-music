@@ -15,9 +15,36 @@ download:
   embedCover: true
   embedLyric: true
   coverSize: 500
+  # ── 性能加固项（全部可选，注释中为默认值；不配置时代码侧用默认值）──
+  # autoConcurrency: true        # 自适应并发：并发数 = clamp(CPU核数, 2, 6)。
+                                 # 注意：本文件显式写了上面的 concurrency 时，手动值优先于自适应；
+                                 # 仅未配置 concurrency 时才按 CPU 核数自适应
+  # retryMax: 3                  # 任务失败自动重试次数（指数退避，见 retryBaseDelayMs）
+  # retryBaseDelayMs: 1000       # 重试退避基础延迟：第 1/2/3 次重试前分别等待 1s/2s/4s
+  # progressFlushIntervalMs: 500 # 进度落盘节流：时间阈值（ms）
+  # progressFlushPercentStep: 2  # 进度落盘节流：百分比阈值（%）
+  #   行为语义：SSE 仍每 chunk 实时推进度；SQLite 按上述双阈值合并写入，
+  #   任务完成/失败/取消时强制落盘最后进度，重启后进度不回退
+  # memGuardIntervalMs: 5000     # RSS 内存护栏采样周期（ms）
+  # memLimitMB: 400              # RSS 超过该阈值（MB）暂停出队，回落 10% 后自动恢复
+                                 # 阈值应低于容器内存上限（经验值 ~83%）：
+                                 # 容器 512m → 400、384m → 320、256m → 200；
+                                 # 高于上限时内核 OOM kill 会先于护栏生效（护栏形同虚设）
+  # batchActivationSize: 200     # 批量入队背压：内存中同时激活的任务上限，超量分批激活
+  # tagWorkers: 2                # 元数据嵌入 worker 数，默认 clamp(floor(CPU/2), 1, 2)，上限 4
 sources:
   dir: data/sources
   hotReload: true
+# ── #45 自动刮削（全部可选；未配置时代码侧用默认值）──
+# 下载完成后自动回查平台详情（年份/曲目号/流派/碟号/专辑艺术家），
+# read-merge-write 只补缺不覆盖已嵌入的标签；失败只记内部状态、不影响下载。
+scrape:
+  enabled: true         # 总开关（false 时零行为变化）
+  # autoOnComplete: true  # 下载完成后自动刮削（关闭后仅设置页手动触发）
+  # concurrency: 1        # 刮削并发（1-4，后台任务建议保持 1）
+  # timeoutMs: 8000       # 平台详情接口超时（ms）
+  # retryMax: 2           # failed 自动重试上限（间隔 5s/15s）
+  # overwrite: false      # true 时覆盖已有标签字段（默认只补缺）
 rateLimit:
   enabled: true
   windowMs: 60000

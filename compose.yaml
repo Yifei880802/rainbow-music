@@ -22,4 +22,6 @@ services:
       # SQLite 数据库目录（任务记录/歌单，含 ro.db + -wal/-shm）→ 宿主机，容器重建不丢历史
       - ./data/db:/app/data/db
     # 内存上限保护（个人自用，实测峰值 <200MB，这里留足余量）
+    # 与 config.yaml 的 download.memLimitMB 联动：阈值应设为本上限的 ~83%（512m → 400）；
+    # 若收紧本上限（如 384m/256m），需同步下调 memLimitMB（320/200），否则内核 OOM kill 会先于护栏生效
     mem_limit: 512m

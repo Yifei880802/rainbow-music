@@ -14,6 +14,7 @@ import { Worker } from 'node:worker_threads'
 import { EventEmitter } from 'node:events'
 import { config } from '../config.js'
 import { logger } from '../logger.js'
+import { sourceState } from './source-state.js'
 import type { InitedSources, LyricInfo, Quality, ScriptInfo, SourceAction } from './lx-env.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -86,6 +87,8 @@ export class SourceEngine extends EventEmitter {
     const s = this.sources.get(id)
     if (!s) throw new Error(`source not found: ${id}`)
     s.enabled = enabled
+    // #56：启停状态持久化到 meta 表，热重载 loadAll()/服务重启后由 load() 恢复
+    sourceState.setEnabled(id, enabled)
     this.emit('source:changed', this.list())
   }
 
@@ -127,12 +130,14 @@ export class SourceEngine extends EventEmitter {
     return this.importFromContent(inferred, body)
   }
 
-  /** 删除音源（卸载 worker + 删文件） */
+  /** 删除音源（卸载 worker + 删文件 + 清理持久化启停状态） */
   async remove(id: string): Promise<void> {
     const rec = this.sources.get(id)
     const file = rec?.file
     await this.unload(id)
     if (file && fs.existsSync(file)) fs.rmSync(file, { force: true })
+    // #56：同步清理 meta 表中的启停记录，避免同名重导入时吃到脏状态
+    sourceState.remove(id)
     this.emit('source:changed', this.list())
   }
 
@@ -155,7 +160,8 @@ export class SourceEngine extends EventEmitter {
       file,
       info: meta,
       sources: {},
-      enabled: true,
+      // #56：热重载/重启后恢复用户显式设置过的启停状态（无记录默认启用）
+      enabled: sourceState.isEnabled(id) ?? true,
       status: 'loading',
     }
     this.sources.set(id, record)
@@ -297,18 +303,20 @@ export class SourceEngine extends EventEmitter {
   /**
    * 精确取指定音质的 URL（不做任何降级）。
    * 供编排器做「跨音源同音质横向遍历」时使用，降级次序由编排器统一掌控。
+   * timeoutMs：单次 action 超时（#56 冒烟测试传短超时，避免拖爆整体预算）。
    */
   async getMusicUrlExact(
     sourceId: string,
     platform: string,
     musicInfo: unknown,
     quality: Quality,
+    timeoutMs = 30_000,
   ): Promise<string> {
     const record = this.sources.get(sourceId)
     if (!record) throw new Error(`source not loaded: ${sourceId}`)
     const supported = record.sources[platform]?.qualitys ?? []
     if (!supported.includes(quality)) throw new Error(`${sourceId} 不支持 ${platform} 的 ${quality} 音质`)
-    return (await this.callAction(sourceId, platform, 'musicUrl', { musicInfo, type: quality })) as string
+    return (await this.callAction(sourceId, platform, 'musicUrl', { musicInfo, type: quality }, timeoutMs)) as string
   }
 
   async getLyric(sourceId: string, platform: string, musicInfo: unknown): Promise<LyricInfo> {

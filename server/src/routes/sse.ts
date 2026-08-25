@@ -14,7 +14,11 @@ import { eventBus, type RoEvent } from '../core/events.js'
 import { logger } from '../core/logger.js'
 
 export async function sseRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/v1/sse/subscribe', async (req, reply) => {
+  // 路由级 logLevel=silent 降噪：外部匿名轮询/扫描频繁命中本路由被全局鉴权 401 拒绝，
+  // 框架默认 info 级请求日志（incoming request / request completed）会刷屏。
+  // pino 的 level 是下限过滤（debug 比 info 更宽松），故压制 info 须取 silent；
+  // 路由自身异常仍由 core logger 直记（如 [sse] write failed），不受影响。
+  app.get('/api/v1/sse/subscribe', { logLevel: 'silent' }, async (req, reply) => {
     // 接管原始响应，阻止 Fastify 再自行发送响应
     reply.hijack()
     reply.raw.writeHead(200, {

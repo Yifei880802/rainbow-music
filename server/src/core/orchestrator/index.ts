@@ -17,6 +17,22 @@ import { findMusic } from '../adapters/match.js'
 import type { MusicInfo } from '../adapters/common.js'
 import { logger } from '../logger.js'
 
+/**
+ * 确定性不可恢复错误：没有任何可用音源支持目标平台。
+ * 重试不可能改变音源可用性（需人工加载/启用音源），队列侧据此跳过退避直接 failed。
+ */
+export class NoSourceError extends Error {
+  constructor(platform: string) {
+    super(`没有可用音源支持平台 ${platform}（需要已加载/启用/ready 且声明支持该平台的音源）`)
+    this.name = 'NoSourceError'
+  }
+}
+
+/** 鸭子类型判定：受控无音源错误（name 校验，跨模块安全） */
+export function isNoSourceError(err: unknown): err is NoSourceError {
+  return typeof err === 'object' && err !== null && (err as Error).name === 'NoSourceError'
+}
+
 export interface ResolveResult {
   url: string
   quality: Quality // 实际命中的音质
@@ -141,7 +157,8 @@ export const orchestrator = {
   async resolveUrl(opts: ResolveOptions): Promise<{ result: ResolveResult; attempts: ResolveAttempt[] }> {
     const order = resolveSourceOrder(opts.platform, opts.primarySourceId, opts.sourceIds)
     if (order.length === 0) {
-      throw new Error(`没有可用音源支持平台 ${opts.platform}（需要已加载/启用/ready 且声明支持该平台的音源）`)
+      // 确定性失败：音源可用性与任务本身无关，重试无意义，直接受控标记上抛
+      throw new NoSourceError(opts.platform)
     }
 
     // 音质降级起点

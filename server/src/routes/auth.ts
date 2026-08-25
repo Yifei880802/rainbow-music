@@ -29,6 +29,7 @@ const PUBLIC_PATHS = new Set<string>([
   '/api/v1/auth/login',
   '/api/v1/auth/status',
   '/favicon.ico',
+  '/favicon.png',
 ])
 
 function getToken(req: FastifyRequest): string | undefined {
@@ -58,6 +59,9 @@ export function registerAuthGuard(app: any): void {
     if (!config.auth.enabled) return
     const url = (req.raw.url ?? '').split('?')[0]!
     if (PUBLIC_PATHS.has(url)) return
+    // /js/* 为登录页/主页的 ES 模块静态资源（纯前端代码，无敏感信息），放行；
+    // 未登录时任何 /api/* 仍会被拦，页面自然回退到登录闭环。
+    if (url.startsWith('/js/')) return
     if (isAuthed(req)) return
 
     if (url.startsWith('/api/')) {
