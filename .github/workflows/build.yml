@@ -1,0 +1,194 @@
+# Rainbow 构建发布流水线
+#
+# 触发方式：
+#   1. push tag vX.Y.Z[-rN]（正式发布）
+#   2. workflow_dispatch 手动触发（输入 version，格式同上）
+#
+# 版本契约：
+#   - tag = vX.Y.Z-rN（rN 为修订号；禁止 latest）
+#   - 镜像 tag 与 fpk compose 中的 tag 严格一致
+#   - scripts/build-fpk.sh 读取 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG，
+#     产物输出至 dist-fpk/rainbow-${FPK_VERSION}.fpk
+#   - fnpack 官方二进制在 fpk 作业中尝试下载（直链见下），以 FNPACK_BIN 注入
+#     build-fpk.sh 走官方打包路径；下载失败不中断流水线，build-fpk.sh
+#     自行降级为手工 tar 组装（与脚本既有降级语义一致）
+#
+# Job 依赖：meta → build → docker → fpk → release
+
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号，格式 vX.Y.Z 或 vX.Y.Z-rN（如 v0.2.0-r1）'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # 创建 GitHub Release
+  packages: write   # 推送 GHCR 镜像
+
+jobs:
+  # ─────────────────────────────────────────────
+  # ① 解析版本号：全流水线共享同一份版本信息
+  # ─────────────────────────────────────────────
+  meta:
+    name: 解析版本号
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.calc.outputs.version }}     # X.Y.Z-rN（fpk 版本号，不带 v）
+      image_tag: ${{ steps.calc.outputs.image_tag }} # vX.Y.Z-rN（镜像 tag，禁止 latest）
+      image: ${{ steps.calc.outputs.image }}         # ghcr.io/<owner>/rainbow-music（全小写）
+    steps:
+      - name: 校验并推导版本号
+        id: calc
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -euo pipefail
+          REF="${INPUT_VERSION:-$GITHUB_REF_NAME}"
+          if ! [[ "$REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-r[0-9]+)?$ ]]; then
+            echo "::error::版本号不合法：${REF}（要求 vX.Y.Z 或 vX.Y.Z-rN）"
+            exit 1
+          fi
+          OWNER_LC="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "version=${REF#v}"
+            echo "image_tag=${REF}"
+            echo "image=ghcr.io/${OWNER_LC}/rainbow-music"
+          } >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────
+  # ② typecheck + build（Node 20）
+  # ─────────────────────────────────────────────
+  build:
+    name: Typecheck + 编译
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: 安装依赖并编译
+        working-directory: server
+        run: |
+          npm ci
+          npm run typecheck && npm run build
+
+  # ─────────────────────────────────────────────
+  # ③ Docker buildx 多架构镜像 → GHCR
+  #    编译产物在镜像内重新生成（Dockerfile 多阶段构建），
+  #    此 job 依赖 build 仅作为「编译门禁」
+  # ─────────────────────────────────────────────
+  docker:
+    name: 构建 amd64+arm64 镜像并推送 GHCR
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录 GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送（amd64 + arm64）
+        env:
+          IMAGE: ${{ needs.meta.outputs.image }}
+          IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file Dockerfile \
+            --tag "${IMAGE}:${IMAGE_TAG}" \
+            --push .
+
+  # ─────────────────────────────────────────────
+  # ④ 组装 .fpk（依赖镜像已推送：fpk compose 直接引用该 tag）
+  #    先尝试下载官方 fnpack（linux 直链）注入 FNPACK_BIN；
+  #    下载失败不中断流水线，build-fpk.sh 内部走降级组装路径
+  # ─────────────────────────────────────────────
+  fpk:
+    name: 打包 .fpk
+    needs: [meta, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 下载官方 fnpack（失败不中断，降级 tar 路径）
+        run: |
+          FNPACK_VER="1.2.3"
+          # 飞牛官方直链命名约定：fnpack-<ver>-linux-<amd64|arm64>（已探测 linux-amd64 → HTTP 200）
+          case "${RUNNER_ARCH:-X64}" in
+            ARM64) ARCH_SUFFIX="arm64" ;;
+            *)     ARCH_SUFFIX="amd64" ;;
+          esac
+          URL="https://static2.fnnas.com/fnpack/fnpack-${FNPACK_VER}-linux-${ARCH_SUFFIX}"
+          BIN="$RUNNER_TEMP/fnpack"
+          echo "[fnpack] 下载官方二进制：${URL}"
+          if curl -fSL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$BIN" "$URL" \
+             && [ -s "$BIN" ] && chmod +x "$BIN"; then
+            echo "FNPACK_BIN=$BIN" >> "$GITHUB_ENV"
+            echo "[fnpack] 下载成功，build-fpk.sh 将走官方 fnpack 打包路径（FNPACK_BIN=$BIN）"
+          else
+            echo "::warning::官方 fnpack 下载/校验失败（${URL}），不中断流水线：build-fpk.sh 将降级为手工 tar 组装（降级产物仅供本地验证，真机分发请使用 fnpack 构建）"
+          fi
+      - name: 运行 scripts/build-fpk.sh
+        env:
+          FPK_VERSION: ${{ needs.meta.outputs.version }}
+          FPK_IMAGE: ${{ needs.meta.outputs.image }}
+          FPK_IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+        run: |
+          chmod +x scripts/build-fpk.sh
+          scripts/build-fpk.sh
+      - name: 校验产物
+        env:
+          FPK_VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          ls -lh "dist-fpk/rainbow-${FPK_VERSION}.fpk"
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: rainbow-fpk
+          path: dist-fpk/*.fpk
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────
+  # ⑤ 创建 GitHub Release：上传 .fpk + 自动生成变更清单
+  # ─────────────────────────────────────────────
+  release:
+    name: 创建 GitHub Release
+    needs: [meta, fpk]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整 tag 历史以生成变更清单
+      - name: 下载 .fpk 产物
+        uses: actions/download-artifact@v4
+        with:
+          name: rainbow-fpk
+          path: dist-fpk
+      - name: 创建 Release（自动生成 Release Notes）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          # 找到上一个发布 tag 作为变更清单起点（首个版本则省略）
+          PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -Fxv "${IMAGE_TAG}" | head -n 1 || true)"
+          NOTES_ARGS=(--generate-notes)
+          if [[ -n "${PREV_TAG}" ]]; then
+            NOTES_ARGS+=(--notes-start-tag "${PREV_TAG}")
+          fi
+          gh release create "${IMAGE_TAG}" dist-fpk/*.fpk \
+            --title "Rainbow ${IMAGE_TAG}" \
+            "${NOTES_ARGS[@]}"
