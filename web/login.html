@@ -3,12 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>登录 · Rainbow 音乐下载</title>
+  <meta name="description" content="Rainbow Music 彩虹音乐 — 跨平台聚合搜索、无损音乐下载与本地曲库管理" />
+  <title>登录 · Rainbow Music 彩虹音乐</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body class="login-body">
   <form id="login-form" class="login-card">
-    <h1>Rainbow 音乐下载</h1>
+    <h1>🌈 Rainbow Music</h1>
     <p class="login-sub">请登录以继续</p>
     <div id="login-hint" class="login-hint" hidden></div>
     <input type="text" id="login-user" placeholder="用户名" autocomplete="username" required />
@@ -16,6 +18,11 @@
     <button type="submit" id="login-btn">登录</button>
     <div id="login-err" class="login-err" hidden></div>
   </form>
+  <div class="login-deco" aria-hidden="true">
+    <span class="login-chip"><i></i>FLAC 无损</span>
+    <span class="login-chip"><i></i>Hi-Res 24bit</span>
+    <span class="login-chip"><i></i>全平台聚合</span>
+  </div>
   <script src="/login.js"></script>
 </body>
 </html>
