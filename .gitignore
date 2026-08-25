@@ -16,3 +16,9 @@ config.yaml
 
 # 杂项
 .DS_Store
+
+# 飞牛 .fpk 打包产物
+dist-fpk/
+
+# fnpack 官方打包工具二进制（不入库，获取方式见 docs/DEVELOPMENT.md）
+tools/fnpack

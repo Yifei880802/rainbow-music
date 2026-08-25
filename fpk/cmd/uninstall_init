@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 卸载钩子：uninstall_init
+#
+# 卸载文件应用前执行：先停容器。
+# 必须放在 init 阶段：compose 文件随应用目录在卸载时被删除，
+# 拖到 callback 就找不到 compose 文件了。compose_down 幂等，找不到文件直接跳过。
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+compose_down
+exit 0

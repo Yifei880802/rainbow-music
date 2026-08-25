@@ -1,0 +1,41 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 飞牛 fnOS 应用生命周期脚本（运行控制）
+#
+# 形态：docker-project（Docker Compose 编排）
+#   start  -> docker compose up -d
+#   stop   -> docker compose down
+#   status -> curl 探测 http://127.0.0.1:<port>/api/v1/status（401 也算存活）
+#
+# 生命周期钩子（install/upgrade/uninstall/config）由 cmd/ 下同名独立脚本承担，
+# 公共函数集中在 cmd/_common。
+#
+# 约定：
+#   - 所有路径只用 TRIM_* 环境变量，不硬编码
+#   - 幂等：重复执行 start/stop 不报错、不破坏已有数据
+#   - 失败信息写入 $TRIM_TEMP_LOGFILE 后 exit 1（会展示给用户）
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+case "${1:-}" in
+    start)
+        # docker-project 的拉起由飞牛 appcenter 触发，这里兜底保证幂等
+        compose_up
+        ;;
+    stop)
+        compose_down
+        ;;
+    status)
+        if probe_status; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        echo "用法: $0 {start|stop|status}" > "${TRIM_TEMP_LOGFILE:-/dev/null}"
+        exit 1
+        ;;
+esac

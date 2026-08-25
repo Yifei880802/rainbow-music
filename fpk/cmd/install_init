@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 安装钩子：install_init
+#
+# 安装文件应用前执行：校验运行环境（Docker 可用性）。
+# 失败写 $TRIM_TEMP_LOGFILE 后 exit 1，安装中止并展示给用户。
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+command -v docker >/dev/null 2>&1 || log_error "本机未安装 Docker，Rainbow 依赖 Docker Compose 运行，请先在飞牛应用中心安装 Docker"
+exit 0

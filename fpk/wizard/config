@@ -1,0 +1,42 @@
+[
+  {
+    "stepTitle": "Rainbow 音乐下载 - 修改配置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "所有字段均可留空：留空表示保留当前配置不变，只更新填写过的项。提交后会自动重启容器使配置生效。"
+      },
+      {
+        "type": "password",
+        "field": "wizard_password",
+        "label": "新登录密码",
+        "helpText": "留空则不修改密码",
+        "rules": [
+          {
+            "min": 6,
+            "message": "密码至少 6 位"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_download_dir",
+        "label": "下载目录",
+        "helpText": "留空则保持当前下载目录不变",
+        "rules": []
+      },
+      {
+        "type": "text",
+        "field": "wizard_port",
+        "label": "服务端口",
+        "helpText": "留空则保持当前端口不变",
+        "rules": [
+          {
+            "pattern": "^[0-9]*$",
+            "message": "端口必须是数字"
+          }
+        ]
+      }
+    ]
+  }
+]

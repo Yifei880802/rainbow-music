@@ -1,0 +1,17 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 安装钩子：install_callback
+#
+# 安装文件应用后执行：按安装向导（wizard_*）渲染初始 config.yaml + 准备数据目录。
+#   - 密码为空 -> 写 $TRIM_TEMP_LOGFILE 后失败退出
+#   - 密码/目录经 yaml_dquote_escape + sed RHS 双重转义，双引号标量注入
+#   - 幂等：config.yaml 已存在则不覆盖
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
+ensure_data_dirs
+exit 0

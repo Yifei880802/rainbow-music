@@ -1,0 +1,49 @@
+[
+  {
+    "stepTitle": "Rainbow 音乐下载 - 初始设置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "Rainbow 是一个多音源聚合音乐下载服务，安装后通过桌面图标打开 Web 界面（默认用户名 admin）。下载的数据保存在飞牛共享目录 rainbow-music 中，卸载应用不会删除。"
+      },
+      {
+        "type": "password",
+        "field": "wizard_password",
+        "label": "登录密码",
+        "rules": [
+          {
+            "required": true,
+            "message": "请填写 Web 登录密码（用户名固定为 admin）"
+          },
+          {
+            "min": 6,
+            "message": "密码至少 6 位"
+          }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_download_dir",
+        "label": "下载目录",
+        "helpText": "音乐文件落盘目录（NAS 上的绝对路径）。留空则默认使用共享目录 rainbow-music，可在文件管理器中直接查看。",
+        "rules": []
+      },
+      {
+        "type": "text",
+        "field": "wizard_port",
+        "label": "服务端口",
+        "initValue": "23330",
+        "rules": [
+          {
+            "required": true,
+            "message": "请填写服务端口"
+          },
+          {
+            "pattern": "^[0-9]+$",
+            "message": "端口必须是数字"
+          }
+        ]
+      }
+    ]
+  }
+]
