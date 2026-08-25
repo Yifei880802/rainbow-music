@@ -1,0 +1,22 @@
+{
+    "docker-project": {
+        "projects": [
+            {
+                "name": "rainbow-music",
+                "path": "docker"
+            }
+        ]
+    },
+    "data-share": {
+        "shares": [
+            {
+                "name": "rainbow-music",
+                "permission": {
+                    "rw": [
+                        "rainbow"
+                    ]
+                }
+            }
+        ]
+    }
+}
