@@ -1,0 +1,51 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 配置向导钩子：config_callback
+#
+# 应用设置页提交后执行：按向导新值热更新 config.yaml（只改提交的字段，保留其余）。
+#   - 密码/目录走 yaml_dquote_escape + sed RHS 双重转义（与 install_callback 一致）
+#   - 下载目录用 awk 区块锚定改 download.dir（不误伤同缩进的 sources.dir）
+#   - 有变更则重启容器生效；末尾幂等补齐数据目录
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+[ -f "$CONFIG_FILE" ] || render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
+changed=0
+if [ -n "${wizard_port:-}" ]; then
+    case "$wizard_port" in
+        *[!0-9]*|'') log_error "端口必须是数字：$wizard_port" ;;
+    esac
+    old_port=$(read_port)
+    if [ "$old_port" != "$wizard_port" ]; then
+        sed -i.bak "s|^\(  port:\).*|\1 ${wizard_port}|" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
+        changed=1
+    fi
+fi
+if [ -n "${wizard_password:-}" ]; then
+    # 与 render_config 一致：双引号标量 + YAML/sed 双重转义
+    pass_esc=$(sed_escape_rhs "$(yaml_dquote_escape "${wizard_password}")")
+    sed -i.bak "s|^\(    password:\).*|\1 \"${pass_esc}\"|" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
+    changed=1
+fi
+if [ -n "${wizard_download_dir:-}" ]; then
+    ddir_esc=$(yaml_dquote_escape "${wizard_download_dir}")
+    # 区块锚定：只改 download 段的 dir（同缩进的 sources.dir 不得被误改）。
+    # 不用 sed 地址+next 写法（BSD/GNU 行为不一致），改 awk 经 ENVIRON 透传（不做转义处理）
+    RO_NEW_DIR="$ddir_esc" awk '
+        /^download:/ { indl = 1; print; next }
+        indl && /^  dir:/ { print "  dir: \"" ENVIRON["RO_NEW_DIR"] "\""; indl = 0; next }
+        /^[^ ]/ { indl = 0 }
+        { print }
+    ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+    mkdir -p "$wizard_download_dir" 2>/dev/null || true
+    changed=1
+fi
+if [ "$changed" = "1" ] && compose_file_ok; then
+    # 配置变更需要重启容器生效
+    compose_up
+fi
+ensure_data_dirs
+exit 0
