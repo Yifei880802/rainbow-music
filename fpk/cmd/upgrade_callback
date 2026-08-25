@@ -1,0 +1,15 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 升级钩子：upgrade_callback
+#
+# 升级文件应用后执行：compose 文件已随新版本更新，重新拉起容器。
+# 数据卷（${TRIM_PKGVAR}）不动，配置（${TRIM_PKGETC}）不重渲染。
+
+set -eu
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "$0")" && pwd)/_common"
+
+ensure_data_dirs
+compose_up
+exit 0
