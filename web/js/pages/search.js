@@ -8,6 +8,7 @@
  */
 import { $, $$, escapeHtml, toast, PLATFORM_NAME, pickPlaylistModal } from '../ui.js'
 import { api } from '../api.js'
+import { store } from '../storage.js'
 
 const state = {
   results: [], // 扁平化的歌曲列表（含 platform）
@@ -18,7 +19,8 @@ const state = {
 const rowKey = (item) => `${item.platform}:${item.songmid}`
 
 /* ============================================================
-   P0-3 · 搜索历史（localStorage `rainbow.searchHistory`，最近 10 条去重置顶）
+   * P0-3 · 搜索历史（storage.js 键 `searchHistory`，按 uid 前缀隔离，
+   * 最近 10 条去重置顶；v0.2.0 旧无前缀键存量读取自动回落生效）
    #57 · 实时联想：输入防抖 300ms 调聚合搜索（限 wy/tx 各前 5 条，title
    跨平台去重后上限 10 条），与历史共用同一浮层容器：
    - 无输入：纯历史面板（focus 弹出，↑↓ / Enter / Esc / × 单删 / 清空）
@@ -26,7 +28,7 @@ const rowKey = (item) => `${item.platform}:${item.songmid}`
      历史组在下（按输入前缀包含过滤）；防抖等待期不显示联想组避免闪烁
    - 竞态保护：suggestSeq 序号，响应回来时已过期则丢弃
    ============================================================ */
-const HISTORY_KEY = 'rainbow.searchHistory'
+const HISTORY_KEY = 'searchHistory' // storage.js 自动加 rainbow.<uid>. 前缀
 const HISTORY_MAX = 10
 const SUGGEST_PLATFORMS = 'wy,tx' // 联想限定平台（控制后端压力，见 API.md §2）
 const SUGGEST_PER_PLATFORM = 5 // 每平台取前 5 条
@@ -44,7 +46,7 @@ let suggestLoading = false
 
 function readHistory() {
   try {
-    const list = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+    const list = JSON.parse(store.get(HISTORY_KEY) || '[]')
     return Array.isArray(list) ? list.filter((it) => it && typeof it.kw === 'string' && it.kw.trim()) : []
   } catch {
     return []
@@ -53,7 +55,7 @@ function readHistory() {
 
 function writeHistory(list) {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)))
+    store.set(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX)))
   } catch {
     /* 隐私模式/配额满：仅本会话内失效 */
   }

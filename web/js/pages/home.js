@@ -3,12 +3,12 @@
  * #67 精选歌单广场分区 + 广场歌单详情 drill）
  * - 数据源：GET /api/v1/hot-playlists（5 平台 10 榜聚合，含酷狗 5 榜，
  *   songs[].songInfo 与搜索结果同构 → 下载/刮削链路零转换）
- * - 缓存：localStorage `rainbow.hot-playlists`（24h TTL；含 errors 平台 5min
+ * - 缓存：storage.js 键 `hot-playlists`（按 uid 前缀隔离；24h TTL；含 errors 平台 5min
  *   短 TTL 重试；写入 try/catch 防御隐私模式/配额满——library.js 同款范式；
  *   #71 结构版本 v 字段：不符/缺失→视为过期强制重拉）
  * - SWR：新鲜缓存直接渲染 + 静默预取，成功且不在 drill 态才重渲染（不打断浏览）
  * - 平台失败隔离：errors 平台渲染橙色警告占位卡（每平台一张，不影响其他平台）
- * - #62 P1：平台分组 tab（单选过滤 + rainbow.hpTab 记忆，内存即时过滤不重拉）/
+ * - #62 P1：平台分组 tab（单选过滤 + storage.js 键 hpTab 记忆，内存即时过滤不重拉）/
  *   横幅推荐位（固定「热歌榜·网易云」，缺则取首榜）/ 骨架屏 shimmer
  *   （首次加载可见，缓存命中直出不闪）/ 卡片 stagger 入场 + 详情返回滚动恢复
  * - drill 详情（#57 范式）：blur(24) 大封面横幅 + 排名列榜单列表 + 歌名/艺人
@@ -22,7 +22,7 @@
  *   全局单连接复用 library.js 范式，天然无泄漏）；已下载行/播放全部直接
  *   player.playQueue 入队（榜位序），now-playing 高亮联动 player:trackchange。
  * - #67 精选歌单广场：榜单区之下独立分区（不受 tab 影响，取舍见 index.html 注释），
- *   GET /api/v1/playlist-square（wy/tx 交错轻量列表，24h localStorage 页码快照缓存 +
+ *   GET /api/v1/playlist-square（wy/tx 交错轻量列表，24h storage.js 页码快照缓存 +
  *   服务端 5min 缓存）；换一批翻页（到底回第 1 页）、wy 分类下拉重拉；
  *   广场卡点进 → 复用现有详情 drill（拉 /search/songlist/detail 转 HotPlaylist
  *   同构 → 过滤/收藏/下载全部零改造）；tx 详情约 75% 成功（推荐位空 cdlist）→
@@ -32,8 +32,9 @@ import { $, $$, escapeHtml, toast, PLATFORM_NAME, confirmModal } from '../ui.js'
 import { api } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
+import { store } from '../storage.js'
 
-const CACHE_KEY = 'rainbow.hot-playlists'
+const CACHE_KEY = 'hot-playlists' // storage.js 自动加 rainbow.<uid>. 前缀（v0.2.1 多账号隔离）
 const CACHE_TTL = 24 * 60 * 60 * 1000 // 24h
 /**
  * #71 缓存结构版本：v:2 = kg 榜单封面修复后的数据（#66 前 v 缺失的存量缓存
@@ -44,11 +45,11 @@ const CACHE_VERSION = 2
 const ERRORS_RETRY_TTL = 5 * 60 * 1000 // errors 平台 5min 短 TTL 重试
 const RENDER_CHUNK = 30 // 详情首屏行数（「加载更多」分块）
 const DL_QUALITY = 'flac' // 榜单下载音质（与搜索页默认档一致）
-const TAB_KEY = 'rainbow.hpTab' // #62 P1：平台分组 tab 记忆
-const SCROLL_KEY = 'rainbow.hpScrollY' // #62 P1：详情返回滚动位置（sessionStorage）
+const TAB_KEY = 'hpTab' // #62 P1：平台分组 tab 记忆（storage.js uid 前缀）
+const SCROLL_KEY = 'hpScrollY' // #62 P1：详情返回滚动位置（store.session，会话内）
 const TAB_PLATFORMS = ['all', 'wy', 'tx', 'kg', 'kw', 'mg'] // 分组 tab：全部/网易云/QQ/酷狗/酷我/咪咕
 // #67 广场：缓存（24h 同 hot-playlists 范式，含 cat/page 快照）与 wy 分类词（tx 无分类体系）
-const SQ_CACHE_KEY = 'rainbow.playlist-square'
+const SQ_CACHE_KEY = 'playlist-square' // storage.js uid 前缀
 const SQ_CACHE_TTL = 24 * 60 * 60 * 1000
 const SQ_CATS = ['全部', '华语', '流行', '摇滚', '电子']
 const SQ_SKELETON_N = 10 // 分区骨架卡数
@@ -66,7 +67,7 @@ const state = {
   drillPl: null, // #67：当前详情歌单对象（广场详情异步填充；榜单为 null 走 data 查找）
   drillShown: RENDER_CHUNK, // 已渲染行数
   filter: '', // 详情过滤词
-  tab: readTab(), // #62 P1：当前平台分组（'all' | 'wy' | …，localStorage 记忆）
+  tab: readTab(), // #62 P1：当前平台分组（'all' | 'wy' | …，storage.js 记忆）
   sq: { data: null, page: 1, cat: '全部', loading: false }, // #67 广场分区
   owned: new Map(), // #69 详情行状态：platform:songmid → 代表任务视图（拉取/SSE 增量维护）
 }
@@ -82,7 +83,7 @@ function todayStr() {
 /** #62 P1：读取记忆的平台分组 tab（非法值/隐私模式回退 'all'） */
 function readTab() {
   try {
-    const v = localStorage.getItem(TAB_KEY)
+    const v = store.get(TAB_KEY)
     if (TAB_PLATFORMS.includes(v)) return v
   } catch {
     /* 隐私模式：本会话回退全部 */
@@ -159,7 +160,7 @@ const COVER_ERR = "this.remove()"
 
 function readCache() {
   try {
-    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null')
+    const c = JSON.parse(store.get(CACHE_KEY) || 'null')
     // #71：v 不符（含旧结构无 v）视为过期 → 走重拉路径（load 内 cached=null）
     if (c && c.v === CACHE_VERSION && c.resp && Array.isArray(c.resp.playlists)) return c
   } catch {
@@ -170,7 +171,7 @@ function readCache() {
 
 function writeCache(resp) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, savedAt: Date.now(), resp }))
+    store.set(CACHE_KEY, JSON.stringify({ v: CACHE_VERSION, savedAt: Date.now(), resp }))
   } catch {
     /* 隐私模式/配额满：仅本会话内失效 */
   }
@@ -189,7 +190,7 @@ function fmtSqPlay(n) {
 /** 广场缓存（24h；快照含 cat/page，分类或页码不匹配视为 miss） */
 function readSqCache() {
   try {
-    const c = JSON.parse(localStorage.getItem(SQ_CACHE_KEY) || 'null')
+    const c = JSON.parse(store.get(SQ_CACHE_KEY) || 'null')
     if (
       c &&
       c.resp &&
@@ -208,7 +209,7 @@ function readSqCache() {
 
 function writeSqCache(resp) {
   try {
-    localStorage.setItem(SQ_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), resp }))
+    store.set(SQ_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), resp }))
   } catch {
     /* 隐私模式/配额满：仅本会话内失效 */
   }
@@ -568,7 +569,7 @@ function enterDetail(pl) {
   state.drillShown = RENDER_CHUNK
   // #62 P1：记录首页滚动位置，返回时恢复
   try {
-    sessionStorage.setItem(SCROLL_KEY, String($('.main-wrap')?.scrollTop ?? 0))
+    store.session.set(SCROLL_KEY, String($('.main-wrap')?.scrollTop ?? 0))
   } catch {
     /* 隐私模式：跳过记忆 */
   }
@@ -674,7 +675,7 @@ function closeDetail() {
   // #62 P1：恢复进详情前的首页滚动位置
   let y = 0
   try {
-    y = Number(sessionStorage.getItem(SCROLL_KEY)) || 0
+    y = Number(store.session.get(SCROLL_KEY)) || 0
   } catch {
     /* 隐私模式：回到顶部 */
   }
@@ -1098,7 +1099,7 @@ export function init() {
     if (!btn || btn.disabled || state.tab === btn.dataset.plat) return
     state.tab = btn.dataset.plat
     try {
-      localStorage.setItem(TAB_KEY, state.tab)
+      store.set(TAB_KEY, state.tab)
     } catch {
       /* 隐私模式：本会话内生效 */
     }

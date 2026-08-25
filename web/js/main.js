@@ -4,6 +4,7 @@
  */
 import { $, $$, escapeHtml, toast } from './ui.js'
 import { api } from './api.js'
+import { store, initUid, currentUser, resetUid } from './storage.js'
 import * as searchPage from './pages/search.js'
 import * as homePage from './pages/home.js'
 import * as libraryPage from './pages/library.js'
@@ -12,6 +13,15 @@ import * as sourcesPage from './pages/sources.js'
 import * as settingsPage from './pages/settings.js'
 import * as healthPage from './pages/health.js'
 import * as player from './player.js'
+
+/* ============================================================
+   v0.2.1 模块六 · FN ID 多用户：首帧前确定身份
+   顶层 await 拉取 GET /api/v1/me 拿 uid（3s 超时/401 回落 null）。
+   storage.js 全部键前缀 `rainbow.<uid>.`（读回落旧无前缀键，写落新键）
+   依赖此处的先后顺序：后续所有页面模块/播放器的 localStorage 读写
+   都发生在本 await 完成之后（模块顶层零读写，首读写均在 init/show）。
+   ============================================================ */
+await initUid()
 
 const PAGES = {
   home: homePage,       // 发现（#60 热门歌单聚合首页，默认视图）
@@ -120,12 +130,13 @@ if (topbarSearch) {
    P2 · 侧栏窄图标模式（body.sidebar-compact）
    仅 ≥1280px 生效（CSS 媒体查询限定，窄屏抽屉行为不变）；
    localStorage 记忆用户偏好，跨断点 resize 自动同步。
+   v0.2.1 模块六：读写改走 storage.js（uid 前缀隔离，读回落旧键）。
    ============================================================ */
-const SB_COMPACT_KEY = 'rainbow.sidebar-compact'
+const SB_COMPACT_KEY = 'sidebar-compact'
 
 function readCompactPref() {
   try {
-    return localStorage.getItem(SB_COMPACT_KEY) === '1'
+    return store.get(SB_COMPACT_KEY) === '1'
   } catch {
     return false
   }
@@ -147,7 +158,7 @@ function toggleSidebarCompact() {
   const next = !document.body.classList.contains('sidebar-compact')
   setCompactClass(next)
   try {
-    localStorage.setItem(SB_COMPACT_KEY, next ? '1' : '0')
+    store.set(SB_COMPACT_KEY, next ? '1' : '0')
   } catch {
     /* 隐私模式/配额满：仅本会话内生效 */
   }
@@ -176,15 +187,72 @@ async function initAuth() {
         } catch {
           /* ignore */
         }
+        resetUid() // 模块六：清内存身份，下个会话重新探测 uid
         location.href = '/login.html'
       })
+      // v0.2.1 模块六：顶栏用户徽章（uid 由 storage.initUid 缓存，免二次请求）
+      setupUserBadge()
     }
   } catch {
     /* ignore */
   }
 }
 
+/* ============================================================
+   v0.2.1 模块六 · 顶栏用户身份徽章 + 账号菜单
+   - 徽章：Hume pill 风格（首字 avatar + 用户名 + caret）；uid='legacy'
+     （本地模式 admin 回退身份）时显示 admin，与后端 /me.username 一致
+   - 菜单：点击徽章展开（用户名 / uid / 登出）；登出复用上方既有登出链路
+     （api.auth.logout + 清内存 uid + 刷登录页）
+   - 不动既有顶栏搜索 pill 与导航结构（契约 A）
+   ============================================================ */
+function setupUserBadge() {
+  const box = $('#usr-box')
+  if (!box) return
+  const u = currentUser()
+  if (!u || !u.username) return
+  box.hidden = false
+  const name = String(u.username)
+  $('#usr-name').textContent = name
+  const avatar = box.querySelector('.usr-avatar')
+  if (avatar) avatar.textContent = Array.from(name)[0]?.toUpperCase() || '?'
+  $('#usr-menu-name').textContent = name
+  $('#usr-menu-uid').textContent = `uid: ${u.uid || '—'}${u.isAdmin ? ' · 管理员' : ''}`
+
+  const badge = $('#usr-badge')
+  const menu = $('#usr-menu')
+  const setMenu = (open) => {
+    menu.hidden = !open
+    badge.setAttribute('aria-expanded', String(open))
+  }
+  badge.addEventListener('click', (e) => {
+    e.stopPropagation()
+    setMenu(menu.hidden)
+  })
+  // 点击菜单外任意处收起（菜单内点击不冒泡到 document 前先自行处理）
+  document.addEventListener('click', (e) => {
+    if (!box.contains(e.target)) setMenu(false)
+  })
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setMenu(false)
+  })
+  $('#usr-logout')?.addEventListener('click', async () => {
+    setMenu(false)
+    try {
+      await api.auth.logout()
+    } catch {
+      /* ignore */
+    }
+    resetUid()
+    location.href = '/login.html'
+  })
+}
+
 // ---------- 最近播放（player.js 写 localStorage，这里渲染侧边栏快捷入口） ----------
+/** 封面地址：NAS 曲目走 library cover 端点，本地任务走既有 cover 端点 */
+const recentCoverOf = (it) =>
+  it && it.kind === 'nas' && it.coverUrl ? it.coverUrl : `/api/v1/cover/${encodeURIComponent(it.id)}`
+
 function renderRecent() {
   const list = player.recentList()
   const box = $('#sb-recent')
@@ -198,7 +266,7 @@ function renderRecent() {
       <button class="sb-recent-item" type="button" data-id="${escapeHtml(it.id)}" title="播放 ${escapeHtml(it.name)}${it.singer ? ' - ' + escapeHtml(it.singer) : ''}">
         <span class="sb-recent-cover" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="13" height="13"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
-          <img src="/api/v1/cover/${encodeURIComponent(it.id)}" alt="" loading="lazy" onerror="this.remove()" />
+          <img src="${escapeHtml(recentCoverOf(it))}" alt="" loading="lazy" onerror="this.remove()" />
         </span>
         <span class="sb-recent-meta"><b>${escapeHtml(it.name)}</b><small>${escapeHtml(it.singer || '')}</small></span>
       </button>`,
@@ -206,12 +274,34 @@ function renderRecent() {
     .join('')
 }
 
-/** 点击最近播放项：校验任务仍存在且已完成 → 单曲播放；不存在则移除并提示 */
+/** 点击最近播放项：NAS 曲目直接用存储的 stream 地址单曲播放；
+ *  本地任务维持既有校验（任务仍存在且已完成 → 单曲播放；不存在则移除并提示） */
 async function onRecentClick(e) {
   const btn = e.target.closest('.sb-recent-item')
   if (!btn) return
   closeDrawer() // 与主导航一致：移动端切页后收起抽屉
   const id = btn.dataset.id
+  // v0.2.1 模块六：NAS 曲目不在任务表，跳过 tasks 校验，凭 recent 存档直接播
+  if (id.startsWith('nas:')) {
+    const item = player.recentList().find((x) => x.id === id)
+    if (item && item.playUrl) {
+      player.playQueue([
+        {
+          id,
+          name: item.name,
+          singer: item.singer || '',
+          album: item.album || '',
+          kind: 'nas',
+          playUrl: item.playUrl,
+          coverUrl: item.coverUrl,
+        },
+      ])
+    } else {
+      player.removeRecent(id)
+      toast('该 NAS 曲目记录已失效，已从最近播放移除')
+    }
+    return
+  }
   try {
     const t = await api.tasks.get(id)
     if (t.status !== 'completed' && t.status !== 'completed_with_warnings') {

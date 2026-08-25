@@ -30,6 +30,7 @@ const EVENT_NAMES = [
   'smoke:failed',
   'scrape:update',
   'scrape:progress',
+  'scan:progress', // v0.2.1 模块六：本地音乐库扫描进度（SSE 按 uid 过滤，前端无需处理 uid 字段）
 ]
 
 const listeners = new Map() // event -> Set<fn>

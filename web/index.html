@@ -84,6 +84,26 @@
           <input type="text" id="topbar-search" placeholder="搜索歌曲、歌手…" autocomplete="off" aria-label="全局搜索" />
           <kbd class="ts-kbd" aria-hidden="true">/</kbd>
         </form>
+        <!-- v0.2.1 模块六：顶栏用户身份徽章（usr-* 新命名空间；点击展开账号菜单：
+             用户名/uid/登出；uid='legacy' 本地模式显示 admin 与 /me.username 一致；
+             不动搜索 pill 与导航结构（契约 A）） -->
+        <div class="usr-box" id="usr-box" hidden>
+          <button class="usr-badge" id="usr-badge" type="button" aria-haspopup="menu" aria-expanded="false" title="账号信息">
+            <span class="usr-avatar" aria-hidden="true">?</span>
+            <span class="usr-name" id="usr-name"></span>
+            <svg class="usr-caret" viewBox="0 0 12 12" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5L6 8l3.5-3.5"/></svg>
+          </button>
+          <div class="usr-menu" id="usr-menu" role="menu" hidden>
+            <div class="usr-menu-head">
+              <span class="usr-menu-name" id="usr-menu-name"></span>
+              <span class="usr-menu-uid" id="usr-menu-uid"></span>
+            </div>
+            <button class="usr-menu-item" id="usr-logout" type="button" role="menuitem">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h-8v16h8M10 12h11M18 8.5L21.5 12 18 15.5"/></svg>
+              退出登录
+            </button>
+          </div>
+        </div>
       </header>
 
       <main>
@@ -216,12 +236,15 @@
           <div class="toolbar">
             <button id="refresh-library">刷新</button>
             <button id="play-all" disabled>▶ 播放全部</button>
-            <!-- #57：曲库维度三段钮（歌曲=现状默认 / 专辑 / 艺人聚合；localStorage rainbow.libDim 记忆，
-                 窄屏保留——文字短标签不依赖图标语义；点击卡片进入过滤态后由面包屑返回） -->
+            <!-- #57：曲库维度分段钮（歌曲=现状默认 / 专辑 / 艺人聚合；storage.js 键 libDim 记忆，
+                 窄屏保留——文字短标签不依赖图标语义；点击卡片进入过滤态后由面包屑返回；
+                 v0.2.1 模块六：新增并列第四钮「NAS 音乐」（增量方式，既有三维度行为零改动）
+                 ——选中时 body.lib-dim-nas 由 CSS 隐藏歌曲三维度专属控件，nas-panel 接管内容区） -->
             <div class="lib-dim-seg" id="lib-dim-seg" role="group" aria-label="曲库维度切换">
               <button id="lib-dim-song" type="button" class="on" aria-pressed="true" title="按歌曲浏览（默认）">歌曲</button>
               <button id="lib-dim-album" type="button" aria-pressed="false" title="按专辑聚合浏览">专辑</button>
               <button id="lib-dim-artist" type="button" aria-pressed="false" title="按艺人聚合浏览">艺人</button>
+              <button id="lib-dim-nas" type="button" aria-pressed="false" title="扫描并浏览 NAS 音乐目录">NAS 音乐</button>
             </div>
             <!-- #56：曲库排序（纯前端内存排序，会话级不持久化；方向钮点击同项切升降序） -->
             <div class="lib-sort-box" role="group" aria-label="曲库排序">
@@ -260,6 +283,39 @@
           </div>
           <!-- #56：筛选 chips（平台组 + 刮削状态组，组内单选、组间叠加；会话级不持久化，内容 JS 动态生成） -->
           <div class="lib-filters" id="lib-filters" hidden></div>
+
+          <!-- v0.2.1 模块六：NAS 音乐面板（lib-dim-nas 维度专属视图；nas-* 新命名空间，
+               独立于歌曲/专辑/艺人三维度渲染管线。空态 = 扫描根配置卡（available 多选 +
+               PUT scan-roots + 开始扫描 POST scan）；扫描中 = SSE scan:progress 进度条；
+               就绪 = 关键词搜索 + 分页曲目列表（limit 100），行点击经 player 入队播放，
+               stream/cover 走 /api/v1/library/tracks/:id/* 端点） -->
+          <div id="nas-panel" hidden>
+            <div class="nas-progress" id="nas-progress" hidden>
+              <div class="nas-progress-info">
+                <span class="nas-progress-label" id="nas-progress-label">正在扫描…</span>
+                <span class="nas-progress-count" id="nas-progress-count"></span>
+              </div>
+              <div class="nas-progress-bar" role="progressbar" aria-label="扫描进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="nas-progress-fill" id="nas-progress-fill" style="width:0%"></div>
+              </div>
+              <div class="nas-progress-stats" id="nas-progress-stats"></div>
+            </div>
+            <div class="nas-tools">
+              <div class="nas-search-box">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+                <input type="text" id="nas-search" placeholder="搜索 NAS 曲库（标题/歌手/专辑）…" autocomplete="off" aria-label="搜索 NAS 曲库" />
+              </div>
+              <button id="nas-refresh" type="button" title="重新拉取 NAS 曲库">
+                <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3"/></svg>
+                刷新
+              </button>
+              <span class="nas-summary" id="nas-summary"></span>
+            </div>
+            <div id="nas-roots" class="nas-roots"></div>
+            <div id="nas-tracks"></div>
+            <button id="nas-more" type="button" hidden>加载更多</button>
+          </div>
+
           <div id="library-songs"></div>
 
           <section id="library-queue" hidden>

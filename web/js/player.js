@@ -8,6 +8,7 @@
  */
 import { $, toast, escapeHtml } from './ui.js'
 import { api } from './api.js'
+import { store } from './storage.js'
 
 let audio = null
 let bar = null
@@ -25,19 +26,19 @@ let repeatMode = 'off'  // repeat：'off' 不循环 | 'all' 列表循环 | 'one'
 let baseQueue = []      // shuffle 开启前的原始队列
 let npOpen = false      // Now Playing 面板开合
 
-// ---------- 最近播放（localStorage，纯前端） ----------
-const RECENT_KEY = 'rainbow.recent'
+// ---------- 最近播放（localStorage，纯前端；v0.2.1 模块六改走 storage.js：uid 前缀隔离） ----------
+const RECENT_KEY = 'recent'
 const RECENT_MAX = 20
 
-// ---------- P0 · localStorage 记忆键（音量 / np 面板开合 / FLAC 提示） ----------
-const VOL_KEY = 'rainbow.volume'
-const NP_OPEN_KEY = 'rainbow.npOpen'
-const FLAC_TIP_KEY = 'rainbow.flac-tip-shown'
+// ---------- P0 · localStorage 记忆键（音量 / np 面板开合 / FLAC 提示；同改 storage.js） ----------
+const VOL_KEY = 'volume'
+const NP_OPEN_KEY = 'npOpen'
+const FLAC_TIP_KEY = 'flac-tip-shown'
 
 /** 读取最近播放列表（损坏/缺失一律安全回退空数组） */
 export function recentList() {
   try {
-    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]')
+    const list = JSON.parse(store.get(RECENT_KEY) || '[]')
     return Array.isArray(list) ? list.filter((it) => it && it.id) : []
   } catch {
     return []
@@ -46,19 +47,62 @@ export function recentList() {
 
 function writeRecent(list) {
   try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list))
+    store.set(RECENT_KEY, JSON.stringify(list))
   } catch {
     /* 隐私模式/配额满：忽略，仅本轮会话内失效 */
   }
   document.dispatchEvent(new CustomEvent('recent:changed', { detail: { list } }))
 }
 
-/** 记录一首：置顶去重，截断保留最近 RECENT_MAX 条 */
+/** 记录一首：置顶去重，截断保留最近 RECENT_MAX 条；
+ *  v0.2.1 模块六：NAS 曲目（kind='nas'）附带 playUrl/coverUrl 存档，
+ *  侧边栏最近播放点击时免 tasks 校验直接重建播放对象 */
 function recordRecent(task) {
   const name = els.title.textContent
   if (!task.id || !name) return
   const entry = { id: task.id, name, singer: els.artist.textContent || '', ts: Date.now() }
+  if (task.kind === 'nas') {
+    entry.kind = 'nas'
+    entry.album = task.album || ''
+    entry.playUrl = task.playUrl
+    entry.coverUrl = task.coverUrl
+  }
   writeRecent([entry, ...recentList().filter((it) => it.id !== task.id)].slice(0, RECENT_MAX))
+}
+
+/* ============================================================
+   v0.2.1 模块六 · 服务端播放历史上报（POST /api/v1/me/history）
+   - 时机：loadAt 记录 recent 的同一时机（每次切歌/起播）
+   - 防刷：同曲目 30s 内不重复上报（seek 重载/快速切回不刷屏）
+   - 原生 fetch fire-and-forget：失败静默（旧后端 404 / 离线均不打扰用户，
+     且避免 api.js request() 的 401 跳转副作用）
+   ============================================================ */
+const HISTORY_THROTTLE_MS = 30000
+const historyLastAt = new Map() // taskId → 上次上报时间戳
+
+function reportHistory(task) {
+  const now = Date.now()
+  const last = historyLastAt.get(task.id) || 0
+  if (now - last < HISTORY_THROTTLE_MS) return
+  historyLastAt.set(task.id, now)
+  const meta = metaOf(task)
+  const track = {
+    kind: task.kind === 'nas' ? 'nas' : 'task',
+    id: task.id,
+    name: meta.name,
+    singer: meta.singer,
+    album: task.album || '',
+    playedAt: now,
+  }
+  if (task.kind === 'nas') track.trackId = String(task.id).replace(/^nas:/, '')
+  fetch('/api/v1/me/history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ track }),
+  }).catch(() => {
+    /* 离线/旧后端：静默 */
+  })
 }
 
 /** 删除一条最近播放（任务不存在时由侧边栏入口调用） */
@@ -173,7 +217,7 @@ function saveVolume(v) {
   clearTimeout(volSaveTimer)
   volSaveTimer = setTimeout(() => {
     try {
-      localStorage.setItem(VOL_KEY, String(v))
+      store.set(VOL_KEY, String(v))
     } catch {
       /* 隐私模式/配额满：仅本会话内生效 */
     }
@@ -183,7 +227,7 @@ function saveVolume(v) {
 /** P0-4：启动音量恢复（localStorage 优先，缺省 0.8；注意 Number(null)===0 需先判空） */
 function readVolume() {
   try {
-    const raw = localStorage.getItem(VOL_KEY)
+    const raw = store.get(VOL_KEY)
     if (raw !== null) {
       const v = Number(raw)
       if (Number.isFinite(v) && v >= 0 && v <= 1) return v
@@ -215,11 +259,14 @@ function loadAt(i, autoplay = true) {
   syncMediaSession(task)
   maybeFlacTip(task)
   recordRecent(task)
+  reportHistory(task) // v0.2.1 模块六：服务端播放历史上报（同 recent 时机，30s 节流防刷）
   syncCover(task)
   syncNp(task)
   syncProgress()
   syncNav()
-  audio.src = `/api/v1/play/${encodeURIComponent(task.id)}`
+  // v0.2.1 模块六：NAS 曲目携带自定义 stream 地址（library/tracks/:id/stream），
+  // 本地任务维持既有 /api/v1/play/:taskId 端点（契约不变）
+  audio.src = task.playUrl || `/api/v1/play/${encodeURIComponent(task.id)}`
   if (autoplay) {
     audio.play().catch(() => {
       /* 非用户手势等播放失败，静默；error 事件会提示 */
@@ -227,11 +274,12 @@ function loadAt(i, autoplay = true) {
   }
 }
 
-/** 播放栏封面：加载 /api/v1/cover/:taskId，成功盖上唱片位，失败回退装饰位 */
+/** 播放栏封面：NAS 曲目用 library cover 端点，本地任务用 /api/v1/cover/:taskId；
+ *  成功盖上唱片位，失败回退装饰位 */
 function syncCover(task) {
   if (!els.cover) return
   els.cover.hidden = true // 先复位，load 事件再展示（避免上一首封面残影）
-  els.cover.src = `/api/v1/cover/${encodeURIComponent(task.id)}`
+  els.cover.src = task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`
 }
 
 /* ============================================================
@@ -347,7 +395,7 @@ function renderNpQueue() {
         ${cur ? '<span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span>' : `<span class="np-item-num">${i + 1}</span>`}
         <span class="np-item-cover" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="13" height="13"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
-          <img src="/api/v1/cover/${encodeURIComponent(t.id)}" alt="" loading="lazy" onerror="this.remove()" />
+          <img src="${escapeHtml(t.coverUrl || `/api/v1/cover/${encodeURIComponent(t.id)}`)}" alt="" loading="lazy" onerror="this.remove()" />
         </span>
         <span class="np-item-meta"><b>${escapeHtml(m.name)}</b><small>${escapeHtml(m.singer)}</small></span>
       </button>`
@@ -361,7 +409,7 @@ function syncNp(task) {
   if (els.npArtist) els.npArtist.textContent = els.artist.textContent || '未知艺术家'
   if (els.npCover) {
     els.npCover.hidden = true
-    els.npCover.src = `/api/v1/cover/${encodeURIComponent(task.id)}`
+    els.npCover.src = task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`
   }
   renderNpQueue()
 }
@@ -370,7 +418,7 @@ function syncNp(task) {
 function setNpOpen(open) {
   npOpen = open
   try {
-    localStorage.setItem(NP_OPEN_KEY, open ? '1' : '0')
+    store.set(NP_OPEN_KEY, open ? '1' : '0')
   } catch {
     /* 隐私模式/配额满：仅本会话内生效 */
   }
@@ -713,7 +761,7 @@ function seekBy(delta) {
 
 // ---------- P0-1 · MediaSession（锁屏/系统媒体控件，存在性检测渐进增强） ----------
 
-/** 切歌时同步系统媒体面元数据（artwork 走 /api/v1/cover/:taskId） */
+/** 切歌时同步系统媒体面元数据（artwork：NAS 曲目走 library cover，本地走 /api/v1/cover/:taskId） */
 function syncMediaSession(task) {
   if (!('mediaSession' in navigator)) return
   try {
@@ -721,8 +769,8 @@ function syncMediaSession(task) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: m.name,
       artist: m.singer,
-      album: '',
-      artwork: [{ src: `/api/v1/cover/${encodeURIComponent(task.id)}`, sizes: '512x512' }],
+      album: task.album || '',
+      artwork: [{ src: task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`, sizes: '512x512' }],
     })
   } catch {
     /* MediaMetadata 不可用（旧浏览器）：静默降级 */
@@ -798,8 +846,8 @@ function canPlayFlac() {
 function maybeFlacTip(task) {
   if (canPlayFlac() || !/\.flac$/i.test(String(task.filePath || ''))) return
   try {
-    if (localStorage.getItem(FLAC_TIP_KEY)) return // 已提示过：不再打扰
-    localStorage.setItem(FLAC_TIP_KEY, '1')
+    if (store.get(FLAC_TIP_KEY)) return // 已提示过：不再打扰
+    store.set(FLAC_TIP_KEY, '1')
   } catch {
     /* 存储不可用：本会话内可能重复提示，可接受 */
   }
@@ -1193,7 +1241,7 @@ export function init() {
   if (window.innerWidth >= 1280) {
     let npSaved = '0'
     try {
-      npSaved = localStorage.getItem(NP_OPEN_KEY) || '0'
+      npSaved = store.get(NP_OPEN_KEY) || '0'
     } catch {
       /* 存储不可用：不恢复 */
     }

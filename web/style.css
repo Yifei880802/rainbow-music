@@ -3126,3 +3126,418 @@ body.lib-dim-artist:not(.lib-drilling) .lib-view-seg { display: none; }
   .sq-card { animation: none; }
   .sq-cat, #sq-more { transition: none; }
 }
+
+/* ============================================================
+   v0.2.1 模块六 · FN ID 多用户（usr-*/nas-*/login-gw-* 新命名空间）
+   - 顶栏用户徽章与账号菜单（Hume pill 语系）
+   - 曲库「NAS 音乐」维度专属面板（nas-*）
+   - 登录页飞牛网关直达卡（login-gw-*）
+   全部为新增选择器；既有规则零改动（契约 A/B 与 #49-#70 回归断言不受影响）
+   ============================================================ */
+
+/* ---------- 顶栏用户徽章（usr-*）---------- */
+.usr-box {
+  position: relative;
+  margin-left: auto; /* 推到顶栏最右（不动既有搜索 pill 与导航结构） */
+  flex-shrink: 0;
+}
+.usr-box[hidden] { display: none; }
+.usr-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 34px; padding: 0 12px 0 5px;
+  border: none; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  color: var(--txt); font-size: 12.5px; font-weight: 500;
+  cursor: pointer;
+  transition: background .18s ease, box-shadow .18s ease;
+}
+.usr-badge:hover {
+  background: rgba(255, 255, 255, .1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .13);
+}
+.usr-badge:focus-visible { outline: 2px solid rgba(238, 108, 43, .6); outline-offset: 1px; }
+.usr-avatar {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: linear-gradient(160deg, var(--acc-hi) 0%, var(--acc) 70%);
+  color: #fff; font-size: 12px; font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .3), 0 2px 8px rgba(238, 108, 43, .3);
+}
+.usr-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usr-caret { color: var(--txt3); transition: transform .18s ease; }
+.usr-badge[aria-expanded="true"] .usr-caret { transform: rotate(180deg); }
+
+/* 账号菜单（毛玻璃浮层，对齐 .topbar 亮度层级） */
+.usr-menu {
+  position: absolute; top: calc(100% + 8px); right: 0;
+  min-width: 200px; padding: 6px;
+  border-radius: var(--r-card);
+  background: rgba(22, 23, 26, .92);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+  box-shadow: var(--shadow-float), inset 0 1px 0 rgba(255, 255, 255, .08);
+  z-index: 80;
+  animation: usr-menu-in .16s cubic-bezier(.3, .9, .4, 1);
+}
+.usr-menu[hidden] { display: none; }
+@keyframes usr-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(.98); }
+  to { opacity: 1; transform: none; }
+}
+.usr-menu-head {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--r-ctl) var(--r-ctl) 0 0;
+  border-bottom: 1px solid var(--brd);
+}
+.usr-menu-name { font-size: 13.5px; font-weight: 600; color: var(--txt); }
+.usr-menu-uid { font-size: 11.5px; color: var(--txt3); font-variant-numeric: tabular-nums; }
+.usr-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; margin-top: 6px; padding: 9px 12px;
+  border: none; border-radius: var(--r-ctl);
+  background: transparent; color: var(--txt2);
+  font-size: 13px; cursor: pointer;
+  transition: background .15s ease, color .15s ease;
+}
+.usr-menu-item:hover { background: rgba(238, 108, 43, .1); color: var(--acc-hi); }
+.usr-menu-item svg { flex-shrink: 0; }
+
+/* ---------- NAS 维度：隐藏歌曲三维度专属控件（同 lib-dim-album/artist 范式） ---------- */
+body.lib-dim-nas #library-songs,
+body.lib-dim-nas .lib-sort-box,
+body.lib-dim-nas #lib-density,
+body.lib-dim-nas .lib-view-seg,
+body.lib-dim-nas #lib-filters,
+body.lib-dim-nas #lib-crumb,
+body.lib-dim-nas #library-queue,
+body.lib-dim-nas #library-summary,
+body.lib-dim-nas #play-all,
+body.lib-dim-nas #refresh-library { display: none; }
+
+/* ---------- NAS 面板（nas-*）---------- */
+#nas-panel {
+  display: flex; flex-direction: column; gap: 16px;
+  animation: view-in .35s ease-out;
+}
+#nas-panel[hidden] { display: none; }
+
+/* 工具行：搜索框 + 刷新 + 摘要（搜索 pill 同 topbar-search 语系） */
+.nas-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nas-search-box {
+  position: relative;
+  display: inline-flex; align-items: center;
+  flex: 1; min-width: 200px; max-width: 360px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .07);
+  transition: box-shadow .18s ease;
+}
+.nas-search-box:focus-within { box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .5), 0 0 0 3px rgba(238, 108, 43, .12); }
+.nas-search-box svg { color: var(--txt3); flex-shrink: 0; }
+.nas-search-box input {
+  flex: 1; min-width: 0;
+  border: none; background: transparent; outline: none;
+  color: var(--txt); font-size: 13px;
+  padding: 0 0 0 8px;
+}
+.nas-search-box input::placeholder { color: var(--txt3); font-size: 12.5px; }
+.nas-search-box input:disabled { opacity: .5; }
+.nas-tools > button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 15px;
+  border: none; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08);
+  color: var(--txt); font-size: 12.5px; font-weight: 500;
+  cursor: pointer;
+  transition: background .18s ease;
+}
+.nas-tools > button:hover { background: rgba(255, 255, 255, .12); }
+.nas-tools > button:active { transform: scale(.97); }
+.nas-summary { font-size: 12px; color: var(--txt3); font-variant-numeric: tabular-nums; }
+
+/* 扫描进度（SSE 驱动；毛玻璃窄条 + 橙色填充） */
+.nas-progress {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--r-card);
+  background: rgba(238, 108, 43, .05);
+  box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .16);
+}
+.nas-progress[hidden] { display: none; }
+.nas-progress-info { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.nas-progress-label { font-size: 13px; font-weight: 600; color: var(--acc-hi); }
+.nas-progress-count { font-size: 12px; color: var(--txt2); font-variant-numeric: tabular-nums; }
+.nas-progress-bar {
+  height: 6px; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .07);
+  overflow: hidden;
+}
+.nas-progress-fill {
+  height: 100%; border-radius: inherit;
+  background: linear-gradient(90deg, var(--acc) 0%, var(--acc-hi) 100%);
+  box-shadow: 0 0 12px rgba(238, 108, 43, .4);
+  transition: width .3s ease;
+}
+.nas-progress-stats { font-size: 11.5px; color: var(--txt3); font-variant-numeric: tabular-nums; }
+
+/* 扫描根配置卡（毛玻璃卡 + 多选路径行） */
+.nas-card {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 18px 16px;
+  border-radius: var(--r-card);
+  background: rgba(255, 255, 255, .05);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), var(--shadow-card);
+}
+.nas-card-head { display: flex; flex-direction: column; gap: 3px; }
+.nas-card-title { font-size: 14.5px; font-weight: 600; }
+.nas-card-sub { font-size: 12px; color: var(--txt3); }
+.nas-roots-list { display: flex; flex-direction: column; gap: 6px; }
+.nas-root-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-radius: var(--r-ctl);
+  background: rgba(255, 255, 255, .04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
+  cursor: pointer;
+  transition: background .15s ease, box-shadow .15s ease;
+}
+.nas-root-item:hover { background: rgba(255, 255, 255, .07); }
+.nas-root-item.on {
+  background: rgba(238, 108, 43, .1);
+  box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .3);
+}
+.nas-root-item input { accent-color: var(--acc); width: 15px; height: 15px; cursor: pointer; flex-shrink: 0; }
+.nas-root-item svg { color: var(--acc-hi); opacity: .85; flex-shrink: 0; }
+.nas-root-path {
+  flex: 1; min-width: 0;
+  font-size: 13px; color: var(--txt);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  direction: rtl; /* 路径过长时保住尾部目录名 */
+  text-align: left;
+}
+.nas-root-tag {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: 10.5px; font-weight: 600;
+  color: var(--acc-hi);
+  background: rgba(238, 108, 43, .15);
+}
+.nas-roots-none { font-size: 12.5px; color: var(--txt3); padding: 4px 2px; }
+.nas-card-acts { display: flex; gap: 10px; flex-wrap: wrap; }
+.nas-card-acts button {
+  height: 38px; padding: 0 20px;
+  border: none; border-radius: var(--r-pill);
+  font-size: 13px; font-weight: 600;
+  cursor: pointer;
+  transition: filter .18s ease, transform .12s ease, background .18s ease;
+}
+.nas-card-acts button:active { transform: scale(.97); }
+.nas-card-acts button:disabled { opacity: .55; cursor: not-allowed; transform: none; }
+#nas-save-roots {
+  background: rgba(255, 255, 255, .08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1);
+  color: var(--txt);
+}
+#nas-save-roots:hover:not(:disabled) { background: rgba(255, 255, 255, .13); }
+.nas-btn-primary {
+  background: linear-gradient(180deg, var(--acc-hi) 0%, var(--acc) 58%);
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(238, 108, 43, .32), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
+.nas-btn-primary:hover:not(:disabled) { filter: brightness(1.07); }
+
+/* NAS 曲目列表（.song-row 同构语系，独立命名空间） */
+.nas-list { display: flex; flex-direction: column; gap: 8px; }
+.nas-row {
+  display: flex; align-items: center; gap: 14px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border-radius: var(--r-ctl);
+  background: rgba(255, 255, 255, .035);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+  cursor: pointer;
+  transition: background .18s ease, box-shadow .22s ease;
+}
+.nas-row:hover {
+  background: rgba(255, 255, 255, .08);
+  box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .18), 0 0 16px rgba(238, 108, 43, .07);
+}
+.nas-row:active { background: rgba(255, 255, 255, .11); }
+.nas-row:focus-visible { outline: 2px solid rgba(238, 108, 43, .6); outline-offset: 1px; }
+.nas-row.now-playing {
+  background: rgba(238, 108, 43, .09);
+  box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .3), 0 0 18px rgba(238, 108, 43, .1);
+}
+.nas-cover {
+  position: relative;
+  width: 40px; height: 40px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; color: rgba(255, 255, 255, .92);
+  background: linear-gradient(145deg, #7a8da3 0%, #56677e 55%, #3d4a5c 100%);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+.nas-row:nth-child(3n) .nas-cover { background: linear-gradient(160deg, #8d9fb5 0%, #5f7390 60%, #425065 100%); }
+.nas-row:nth-child(4n) .nas-cover { background: linear-gradient(120deg, #6f849c 0%, #4d5f78 58%, #384657 100%); }
+.nas-cover img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: cover;
+  border-radius: inherit;
+}
+.nas-note { opacity: .95; }
+.nas-row:hover .nas-note { opacity: 0; }
+/* 均衡器律动（同 .song-eq 语系；仅 now-playing 时可见） */
+.nas-eq {
+  position: absolute; inset: 0;
+  display: none; align-items: flex-end; justify-content: center; gap: 2.5px;
+  padding-bottom: 9px;
+}
+.nas-row.now-playing .nas-eq { display: flex; }
+.nas-eq i {
+  width: 3px; height: 30%; border-radius: 2px;
+  background: var(--acc-hi);
+  animation: eq-bounce 1s ease-in-out infinite;
+}
+.nas-eq i:nth-child(2) { animation-delay: .18s; }
+.nas-eq i:nth-child(3) { animation-delay: .36s; }
+/* hover 浮现 ▶（同 .song-play 语系） */
+.nas-play {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none;
+  background: transparent;
+  color: #fff; cursor: pointer;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+.nas-row:hover .nas-play, .nas-play:focus-visible { opacity: 1; }
+.nas-play svg { filter: drop-shadow(0 2px 6px rgba(0, 0, 0, .5)); }
+.nas-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.nas-name {
+  font-size: 13.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nas-artist {
+  font-size: 12px; color: var(--txt2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nas-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.nas-fmt {
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: 10px; font-weight: 700; letter-spacing: .5px;
+  color: var(--txt2);
+  background: rgba(255, 255, 255, .07);
+}
+.nas-dur { font-size: 12px; color: var(--txt3); font-variant-numeric: tabular-nums; }
+
+/* 加载更多 */
+#nas-more {
+  align-self: center;
+  height: 38px; padding: 0 26px;
+  border: none; border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, .07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .09);
+  color: var(--txt); font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: background .18s ease, transform .12s ease;
+}
+#nas-more:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
+#nas-more:active:not(:disabled) { transform: scale(.97); }
+#nas-more:disabled { opacity: .6; cursor: default; }
+#nas-more[hidden] { display: none; }
+
+/* 空态 / 错误态 */
+.nas-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 46px 20px;
+  border-radius: var(--r-card);
+  background: rgba(255, 255, 255, .03);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .05);
+  text-align: center;
+  color: var(--txt2); font-size: 13.5px;
+}
+.nas-empty-icon { color: var(--txt3); margin-bottom: 4px; }
+.nas-empty-sub { font-size: 12px; color: var(--txt3); max-width: 440px; line-height: 1.7; }
+.nas-retry {
+  margin-top: 8px;
+  height: 34px; padding: 0 18px;
+  border: none; border-radius: var(--r-pill);
+  background: rgba(238, 108, 43, .14);
+  color: var(--acc-hi); font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+}
+.nas-retry:hover { background: rgba(238, 108, 43, .22); }
+
+/* 骨架屏（复用 hp-sk 扫光基类 + nas 尺寸槽） */
+.nas-roots-sk { pointer-events: none; }
+.nas-sk-title { width: 88px; height: 17px; }
+.nas-sk-root { height: 41px; }
+.nas-sk-cta { width: 104px; height: 38px; border-radius: var(--r-pill); }
+.nas-row-sk { cursor: default; pointer-events: none; }
+.nas-sk-cover { width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; }
+.nas-sk-info { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+.nas-sk-dur { width: 38px; height: 13px; flex-shrink: 0; }
+
+/* 窄屏适配（搜索行换行；行内右区收纳） */
+@media (max-width: 900px) {
+  .usr-name { display: none; } /* 窄屏只留头像，保顶栏空间 */
+  .usr-badge { padding: 0 9px 0 5px; }
+  .nas-search-box { max-width: none; }
+  .nas-fmt { display: none; }
+}
+
+/* 动效降级（进度条宽度过渡与面板入场豁免） */
+@media (prefers-reduced-motion: reduce) {
+  #nas-panel, .usr-menu { animation: none; }
+  .nas-progress-fill { transition: none; }
+}
+
+/* ---------- 登录页 · 飞牛网关直达卡（login-gw-*，同 .login-card 毛玻璃形态） ---------- */
+.login-gw {
+  display: flex; flex-direction: column; gap: 14px;
+  width: 340px; max-width: 92vw; padding: 34px 32px 30px;
+  border-radius: var(--r-screen);
+  background: rgba(255, 255, 255, .07);
+  -webkit-backdrop-filter: blur(28px) saturate(1.2);
+  backdrop-filter: blur(28px) saturate(1.2);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 24px 60px rgba(0, 0, 0, .5);
+  animation: view-in .4s ease-out;
+}
+.login-gw[hidden] { display: none; }
+.login-gw-icon {
+  width: 56px; height: 56px;
+  display: flex; align-items: center; justify-content: center;
+  align-self: center;
+  border-radius: var(--r-card);
+  color: var(--acc-hi);
+  background: rgba(238, 108, 43, .12);
+  box-shadow: inset 0 0 0 1px rgba(238, 108, 43, .22);
+}
+.login-gw-title {
+  font-size: 20px; font-weight: 700; text-align: center;
+  background: linear-gradient(92deg, var(--txt) 45%, var(--acc-hi));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.login-gw-text { text-align: center; color: var(--txt2); font-size: 13.5px; line-height: 1.7; }
+.login-gw-btn {
+  padding: 0; height: 56px;
+  border: none; border-radius: var(--r-pill);
+  background: linear-gradient(180deg, var(--acc-hi) 0%, var(--acc) 58%);
+  color: #fff; font-size: 16px; font-weight: 600; letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 8px 26px rgba(238, 108, 43, .38), inset 0 1px 0 rgba(255, 255, 255, .3);
+  transition: filter .18s ease, transform .12s ease;
+}
+.login-gw-btn:hover { filter: brightness(1.07); }
+.login-gw-btn:active { transform: scale(.98); }
+.login-gw-btn:disabled { background: rgba(255, 255, 255, .1); color: var(--txt3); box-shadow: none; cursor: not-allowed; }
+.login-gw-btn[hidden] { display: none; }

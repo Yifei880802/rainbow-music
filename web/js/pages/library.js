@@ -13,11 +13,11 @@
  * - #56 曲库排序（添加时间/标题/艺术家/时长 + 升降序方向钮，纯前端内存排序，
  *   会话级不持久化）与筛选（平台/刮削状态 chips，组内单选、组间叠加）；
  *   SSE 增量刷新后 render 自动按当前排序筛选重排。网格/列表双视图均生效。
- * - #56 列表密度三档（舒适 56 默认 / 紧凑 44 / 宽松 68）：localStorage
- *   rainbow.libDensity 记忆，仅列表视图可见（网格态与窄屏由 CSS 隐藏）。
+ * - #56 列表密度三档（舒适 56 默认 / 紧凑 44 / 宽松 68）：storage.js
+ *   键 libDensity 记忆（uid 前缀隔离），仅列表视图可见（网格态与窄屏由 CSS 隐藏）。
  * - #57 艺人/专辑聚合视图：纯前端按 GET /tasks 顶层 singer/album 字段聚合
  *   （实测填充率 49/51 与 51/51，无需新后端端点）。维度三段钮（歌曲/专辑/艺人，
- *   localStorage rainbow.libDim 记忆，窄屏保留）；聚合卡点击进入过滤态
+ *   storage.js 键 libDim 记忆，窄屏保留）；聚合卡点击进入过滤态
  *   （面包屑返回 + visibleSongs 收窄到该组，播放/下载/刮削交互全保留）；
  *   未刮削歌曲（字段缺失）归入「未知专辑/未知艺人」弱化组排末尾；
  *   筛选 chips 计数随维度/drill 联动重算；SSE 刷新自动重算聚合。
@@ -26,6 +26,7 @@ import { $, $$, escapeHtml, toast, statusLabel, PLATFORM_NAME, confirmModal, for
 import { api } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
+import { store } from '../storage.js'
 
 const tasks = new Map() // id → 任务视图
 const durations = new Map() // id → 播放加载后回填的时长（秒）；后端任务记录无 duration 列，只能播过才知道
@@ -40,18 +41,18 @@ let scrapeBatch = null
    #53 · P1a 网格/列表双视图（Apple Music 风格大封面网格 + 56px 契约列表）
    - 状态机：单 class body.lib-grid（CSS 作用域重排 .song-row，DOM 模板零改动，
      SSE 局部刷新选择器 .song-row[data-id] 两视图进同源生效）
-   - 记忆：localStorage rainbow.libView（缺省 grid）；≤900px 窄屏由
+   * - 记忆：storage.js 键 libView（uid 前缀隔离，缺省 grid）；≤900px 窄屏由
      matchMedia 强制网格单列（不覆盖记忆），切换控件由 CSS 媒体查询隐藏
    - 切换瞬间：#library-songs 加 .lib-switching 触发 fade+scale 240ms
      （render 重建 .song-list 不携带该态，不会被 SSE 重渲染误触发）
    ============================================================ */
-const LIB_VIEW_KEY = 'rainbow.libView'
+const LIB_VIEW_KEY = 'libView' // storage.js 自动加 rainbow.<uid>. 前缀（v0.2.1 多账号隔离）
 const NARROW_MQ = window.matchMedia('(max-width: 900px)')
 let libView = 'grid'
 
 function readLibView() {
   try {
-    return localStorage.getItem(LIB_VIEW_KEY) === 'list' ? 'list' : 'grid'
+    return store.get(LIB_VIEW_KEY) === 'list' ? 'list' : 'grid'
   } catch {
     return 'grid'
   }
@@ -77,7 +78,7 @@ function setLibView(v) {
   if (v !== 'grid' && v !== 'list') return
   libView = v
   try {
-    localStorage.setItem(LIB_VIEW_KEY, v)
+    store.set(LIB_VIEW_KEY, v)
   } catch {
     /* 隐私模式/配额满：仅本会话内生效 */
   }
@@ -96,22 +97,22 @@ function initLibView() {
 
 /* ============================================================
    #57 · 艺人/专辑聚合维度（歌曲/专辑/艺人三段钮 + 过滤态 drill）
-   - 维度：localStorage rainbow.libDim（缺省 song；窄屏保留文字三段钮）
+   - 维度：storage.js 键 libDim（uid 前缀隔离，缺省 song；窄屏保留文字三段钮）
    - 过滤态（drill）：会话级不持久化，点击聚合卡进入；面包屑返回钮退出。
      进入后列表 = 该专辑/艺人的歌曲（visibleSongs 收窄，排序筛选照常叠加），
      播放全部/行点击/刮削/下载等交互全部沿用歌曲维度代码路径。
    - 未知分组：album/singer 缺失的任务归入「未知专辑/未知艺人」，弱化排末尾。
    ============================================================ */
-const LIB_DIM_KEY = 'rainbow.libDim'
+const LIB_DIM_KEY = 'libDim' // storage.js uid 前缀
 const UNKNOWN_ALBUM = '未知专辑'
 const UNKNOWN_ARTIST = '未知艺人'
-let libDim = 'song' // 'song' | 'album' | 'artist'
+let libDim = 'song' // 'song' | 'album' | 'artist' | 'nas'（模块六：NAS 音乐维度）
 let libDrill = null // { dim: 'album'|'artist', key } | null —— key 即分组 label
 
 function readLibDim() {
   try {
-    const v = localStorage.getItem(LIB_DIM_KEY)
-    return v === 'album' || v === 'artist' ? v : 'song'
+    const v = store.get(LIB_DIM_KEY)
+    return v === 'album' || v === 'artist' || v === 'nas' ? v : 'song'
   } catch {
     return 'song'
   }
@@ -120,18 +121,22 @@ function readLibDim() {
 function applyLibDim() {
   document.body.classList.toggle('lib-dim-album', libDim === 'album')
   document.body.classList.toggle('lib-dim-artist', libDim === 'artist')
-  for (const v of ['song', 'album', 'artist']) {
+  document.body.classList.toggle('lib-dim-nas', libDim === 'nas')
+  for (const v of ['song', 'album', 'artist', 'nas']) {
     const btn = $(`#lib-dim-${v}`)
     if (btn) {
       btn.classList.toggle('on', libDim === v)
       btn.setAttribute('aria-pressed', String(libDim === v))
     }
   }
+  // 模块六：NAS 面板显隐（nas-panel 与 library-songs 互斥；nas-* 新命名空间）
+  const nasPanel = $('#nas-panel')
+  if (nasPanel) nasPanel.hidden = libDim !== 'nas'
 }
 
 function initLibDim() {
   libDim = readLibDim()
-  for (const v of ['song', 'album', 'artist']) {
+  for (const v of ['song', 'album', 'artist', 'nas']) {
     $(`#lib-dim-${v}`)?.addEventListener('click', () => setLibDim(v))
   }
   $('#lib-crumb-back')?.addEventListener('click', onCrumbBack)
@@ -139,21 +144,22 @@ function initLibDim() {
   applyLibDim()
 }
 
-/** 维度切换：重置 drill + 写记忆 + 切换过渡动画 + 重渲染 */
+/** 维度切换：重置 drill + 写记忆 + 切换过渡动画 + 重渲染（模块六：nas 维度额外拉取数据） */
 function setLibDim(v) {
-  if (v !== 'song' && v !== 'album' && v !== 'artist') return
+  if (v !== 'song' && v !== 'album' && v !== 'artist' && v !== 'nas') return
   if (v === libDim && !libDrill) return
   libDim = v
   libDrill = null
   document.body.classList.remove('lib-drilling')
   try {
-    localStorage.setItem(LIB_DIM_KEY, v)
+    store.set(LIB_DIM_KEY, v)
   } catch {
     /* 隐私模式/配额满：仅本会话内生效 */
   }
   applyLibDim()
   triggerLibSwitching()
   render()
+  if (v === 'nas') nasEnsure() // 模块六：进入 NAS 维度 → 拉取 roots/status/tracks
 }
 
 /** 点击聚合卡进入过滤态 */
@@ -290,10 +296,10 @@ function renderCrumb() {
 
 /* ============================================================
    #56 · 列表密度三档（舒适 56 默认 / 紧凑 44 / 宽松 68）
-   localStorage rainbow.libDensity 记忆；仅列表视图生效与可见
+   storage.js 键 libDensity 记忆（uid 前缀隔离）；仅列表视图生效与可见
    （网格态 body.lib-grid / 窄屏 ≤900px 由 CSS 隐藏按钮）。
    ============================================================ */
-const LIB_DENSITY_KEY = 'rainbow.libDensity'
+const LIB_DENSITY_KEY = 'libDensity' // storage.js uid 前缀
 const DENSITIES = [
   { key: 'cozy', label: '舒适', h: 56 },
   { key: 'compact', label: '紧凑', h: 44 },
@@ -303,7 +309,7 @@ let libDensity = 'cozy'
 
 function readLibDensity() {
   try {
-    const v = localStorage.getItem(LIB_DENSITY_KEY)
+    const v = store.get(LIB_DENSITY_KEY)
     return DENSITIES.some((d) => d.key === v) ? v : 'cozy'
   } catch {
     return 'cozy'
@@ -325,7 +331,7 @@ function cycleLibDensity() {
   const idx = DENSITIES.findIndex((d) => d.key === libDensity)
   libDensity = DENSITIES[(idx + 1) % DENSITIES.length].key
   try {
-    localStorage.setItem(LIB_DENSITY_KEY, libDensity)
+    store.set(LIB_DENSITY_KEY, libDensity)
   } catch {
     /* 隐私模式/配额满：仅本会话内生效 */
   }
@@ -519,14 +525,21 @@ export function init() {
     durations.set(taskId, duration)
     const cell = document.querySelector(`#library-songs .song-row[data-id="${CSS.escape(taskId)}"] .song-dur`)
     if (cell) cell.textContent = fmtDur(duration)
+    // 模块六：NAS 行时长回填（durationMs 后端可缺，播放后此处补齐）
+    const nasCell = document.querySelector(`#nas-tracks .nas-row[data-id="${CSS.escape(taskId)}"] .nas-dur`)
+    if (nasCell) nasCell.textContent = fmtDur(duration)
   })
+
+  // v0.2.1 模块六：NAS 音乐面板（搜索/刷新/加载更多/行点击播放 + SSE 扫描进度）
+  initNas()
 
   inited = true
 }
 
-/** 每次切到本页：全量对账一次（含首次进入） */
+/** 每次切到本页：全量对账一次（含首次进入）；模块六：NAS 维度同步兑底扫描状态 */
 export function show() {
   reconcile()
+  if (libDim === 'nas') nasEnsure()
   highlightNowPlaying(player.currentTask())
 }
 
@@ -689,6 +702,12 @@ function updateRowScrape(view) {
 }
 
 function render() {
+  // v0.2.1 模块六：NAS 维度 → 专属面板渲染（歌曲/专辑/艺人三维度管线零改动；
+  // SSE task 事件驱动的 render 在 NAS 维度下幂等重绘 NAS 面板，无副作用）
+  if (libDim === 'nas') {
+    renderNas()
+    return
+  }
   const songs = visibleSongs() // #56：排序 + 筛选后的可见集合（#57 drill 态已收窄）
   const queue = [...tasks.values()].filter((t) => !isDone(t))
 
@@ -939,9 +958,425 @@ async function onQueueAction(e) {
   }
 }
 
-/** 当前播放歌曲橙色发光高亮 */
+/** 当前播放歌曲橙色发光高亮（模块六：同步覆盖 NAS 行） */
 function highlightNowPlaying(taskId) {
   $$('#library-songs .song-row').forEach((row) => {
     row.classList.toggle('now-playing', !!taskId && row.dataset.id === taskId)
   })
+  $$('#nas-tracks .nas-row').forEach((row) => {
+    row.classList.toggle('now-playing', !!taskId && row.dataset.id === taskId)
+  })
+}
+
+/* ============================================================
+   v0.2.1 模块六 · NAS 音乐（lib-dim-nas 维度专属面板，nas-* 新命名空间）
+   - 数据：GET /api/v1/me/scan-roots（available/selected）+ GET /api/v1/library/
+     tracks（limit 100 分页 + q 搜索）+ POST /api/v1/library/scan（202/无根 400/
+     扫描中 409）+ SSE scan:progress（phase walk|meta|done + scanned/total +
+     added/updated/removed + currentRoot；SSE 按 uid 过滤，前端无需处理 uid）
+   - 空态：扫描根配置卡（available 多选 + 保存 PUT scan-roots + 开始扫描）；
+     本地开发环境 RO_SCAN_ROOTS 默认 /app/data/downloads 在 Mac 不存在——扫描后
+     tracks 可能为空，优雅呈现引导文案，不报错不白屏
+   - 播放：行点击构造 player 兼容曲目标（id='nas:<trackId>' 命名空间避免与
+     任务 id 冲突；kind='nas' 附 playUrl=stream / coverUrl=cover 端点，
+     player.loadAt 直接以 playUrl 作音频源；服务端历史 POST /api/v1/me/history
+     由 player.reportHistory 30s 节流上报，与 recent 记录同时机）
+   - 局部刷新：SSE 进度仅更新进度条 DOM（不重建配置卡，避免打断勾选）；
+     扫描完成（phase=done）重拉 roots + tracks
+   ============================================================ */
+const NAS_PAGE_SIZE = 100
+const NAS_SEARCH_DEBOUNCE = 350
+
+const nasState = {
+  roots: null, // {available:[], selected:[{path,enabled}]} | null（未加载）
+  rootsSaving: false,
+  scanning: false,
+  progress: null, // {phase, scanned, total, added, updated, removed, currentRoot}
+  tracks: [],
+  total: 0,
+  offset: 0,
+  q: '',
+  loading: false, // tracks 拉取进行中（分页/竞态守卫）
+  loaded: false, // 首次加载完成（之后刷新走显式动作）
+  err: null,
+}
+let nasSearchTimer = 0
+
+/** NAS 曲目 → player 兼容队列条目（id 命名空间 nas: 避免与任务 id 冲突） */
+function nasTrackToPlayer(t) {
+  const tid = String(t.id)
+  return {
+    id: `nas:${tid}`,
+    kind: 'nas',
+    name: t.title || '',
+    singer: t.artist || '',
+    album: t.album || '',
+    platform: 'nas',
+    playUrl: `/api/v1/library/tracks/${encodeURIComponent(tid)}/stream`,
+    coverUrl: `/api/v1/library/tracks/${encodeURIComponent(tid)}/cover`,
+  }
+}
+
+/** 进入 NAS 维度：拉 roots + 扫描状态（轻量），tracks 首次未加载时拉 */
+async function nasEnsure() {
+  await Promise.all([nasLoadRoots(), nasLoadStatus()])
+  renderNas()
+  if (!nasState.loaded) await nasLoadTracks(true)
+}
+
+async function nasLoadRoots() {
+  try {
+    nasState.roots = await api.me.scanRoots()
+    if (!nasState.err || !nasState.tracks.length) nasState.err = null
+  } catch (err) {
+    nasState.roots = null
+    nasState.err = err
+  }
+}
+
+async function nasLoadStatus() {
+  try {
+    const st = await api.library.scanStatus()
+    nasState.scanning = !!st.scanning
+    nasState.progress = st.progress || null
+  } catch {
+    /* 旧后端无此端点：静默，进度条不展示 */
+    nasState.scanning = false
+    nasState.progress = null
+  }
+}
+
+/** 拉曲目列表（reset=true 重置分页；搜索词变化/刷新/扫描完成走 reset） */
+async function nasLoadTracks(reset) {
+  if (nasState.loading) return
+  if (reset) {
+    nasState.offset = 0
+    nasState.tracks = []
+  }
+  nasState.loading = true
+  renderNasTracks()
+  try {
+    const r = await api.library.tracks({
+      limit: NAS_PAGE_SIZE,
+      offset: nasState.offset,
+      q: nasState.q || undefined,
+    })
+    const list = r.tracks || []
+    nasState.tracks = reset ? list : [...nasState.tracks, ...list]
+    nasState.total = r.total ?? nasState.tracks.length
+    nasState.offset += list.length
+    nasState.loaded = true
+    nasState.err = null
+  } catch (err) {
+    nasState.err = err
+  } finally {
+    nasState.loading = false
+    renderNas()
+  }
+}
+
+/** NAS 面板渲染（幂等；数据未就绪时渲染骨架） */
+function renderNas() {
+  if (libDim !== 'nas') return
+  const panel = $('#nas-panel')
+  if (!panel) return
+  panel.hidden = false
+
+  nasUpdateProgress()
+  const search = $('#nas-search')
+  if (search) {
+    search.disabled = nasState.scanning
+    if (search.value !== nasState.q) search.value = nasState.q
+  }
+  const sum = $('#nas-summary')
+  if (sum) {
+    sum.textContent = nasState.scanning
+      ? '扫描进行中…'
+      : nasState.loaded
+        ? nasState.total
+          ? `NAS 曲库 ${nasState.total} 首`
+          : ''
+        : ''
+  }
+
+  renderNasRoots()
+  renderNasTracks()
+}
+
+/** 进度条局部更新（SSE 驱动；不动配置卡避免打断勾选） */
+function nasUpdateProgress() {
+  const prog = $('#nas-progress')
+  if (!prog) return
+  if (!nasState.scanning) {
+    prog.hidden = true
+    return
+  }
+  prog.hidden = false
+  const p = nasState.progress
+  const label = $('#nas-progress-label')
+  if (label) {
+    label.textContent = p?.phase === 'meta' ? '正在读取元数据…' : p?.phase === 'done' ? '扫描收尾…' : '正在遍历目录…'
+  }
+  const cnt = $('#nas-progress-count')
+  if (cnt) cnt.textContent = p ? (p.total ? `${p.scanned ?? 0} / ${p.total}` : `${p.scanned ?? 0}`) : ''
+  const pct = p && p.total ? Math.min(100, Math.round(((p.scanned || 0) / p.total) * 100)) : 0
+  const fill = $('#nas-progress-fill')
+  if (fill) fill.style.width = `${pct}%`
+  prog.setAttribute('aria-valuenow', String(pct))
+  const stats = []
+  if (p) {
+    if (p.added) stats.push(`新增 ${p.added}`)
+    if (p.updated) stats.push(`更新 ${p.updated}`)
+    if (p.removed) stats.push(`移除 ${p.removed}`)
+    if (p.currentRoot) stats.push(`当前 ${p.currentRoot}`)
+  }
+  const st = $('#nas-progress-stats')
+  if (st) st.textContent = stats.join(' · ')
+  // 扫描中禁用扫描钮（局部更新，配置卡不重建）
+  const scanBtn = $('#nas-scan')
+  if (scanBtn) {
+    scanBtn.disabled = true
+    scanBtn.textContent = '扫描中…'
+  }
+}
+
+/** 扫描根配置卡（毛玻璃卡 + available 多选 + 保存/扫描双钮） */
+function renderNasRoots() {
+  const box = $('#nas-roots')
+  if (!box) return
+  const roots = nasState.roots
+  if (!roots) {
+    // 未就绪：骨架卡（复用 hp-sk 扫光体系）
+    box.innerHTML = `
+      <div class="nas-card nas-roots-sk" aria-hidden="true">
+        <div class="hp-sk nas-sk-title"></div>
+        <div class="hp-sk hp-sk-line w70"></div>
+        <div class="nas-roots-list">
+          <div class="hp-sk nas-sk-root"></div>
+          <div class="hp-sk nas-sk-root"></div>
+        </div>
+        <div class="nas-card-acts"><div class="hp-sk nas-sk-cta"></div><div class="hp-sk nas-sk-cta"></div></div>
+      </div>`
+    return
+  }
+  const selectedPaths = new Set((roots.selected || []).filter((s) => s && s.enabled !== false).map((s) => s.path))
+  const avail = roots.available || []
+  box.innerHTML = `
+    <div class="nas-card">
+      <div class="nas-card-head">
+        <h3 class="nas-card-title">扫描目录</h3>
+        <p class="nas-card-sub">选择要纳入 NAS 曲库的音乐目录（可多选，保存后生效）</p>
+      </div>
+      ${avail.length
+        ? `<div class="nas-roots-list">${avail
+            .map(
+              (p) => `
+        <label class="nas-root-item${selectedPaths.has(p) ? ' on' : ''}">
+          <input type="checkbox" value="${escapeHtml(p)}"${selectedPaths.has(p) ? ' checked' : ''} />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7V5.5A1.5 1.5 0 0 1 4.5 4h4l2 2.5h7A1.5 1.5 0 0 1 19 8v1"/><path d="M3 9h17.2a1 1 0 0 1 .98 1.2l-1.5 7A1.6 1.6 0 0 1 18.1 18.4H5.4a1.6 1.6 0 0 1-1.57-1.28L2.2 10.2A1 1 0 0 1 3 9z"/></svg>
+          <span class="nas-root-path" title="${escapeHtml(p)}">${escapeHtml(p)}</span>
+          ${selectedPaths.has(p) ? '<span class="nas-root-tag">已选</span>' : ''}
+        </label>`,
+            )
+            .join('')}</div>`
+        : '<p class="nas-roots-none">服务端未配置可用扫描目录（RO_SCAN_ROOTS）</p>'}
+      <div class="nas-card-acts">
+        <button id="nas-save-roots" type="button"${nasState.rootsSaving ? ' disabled' : ''}>${nasState.rootsSaving ? '保存中…' : '保存目录'}</button>
+        <button id="nas-scan" type="button" class="nas-btn-primary"${nasState.scanning ? ' disabled' : ''}>${nasState.scanning ? '扫描中…' : '开始扫描'}</button>
+      </div>
+    </div>`
+  $('#nas-save-roots')?.addEventListener('click', nasSaveRoots)
+  $('#nas-scan')?.addEventListener('click', nasStartScan)
+}
+
+/** 保存扫描根：PUT scan-roots（越界路径 400 → toast 提示） */
+async function nasSaveRoots() {
+  const checked = $$('#nas-roots input[type="checkbox"]:checked').map((i) => i.value)
+  nasState.rootsSaving = true
+  const btn = $('#nas-save-roots')
+  if (btn) {
+    btn.disabled = true
+    btn.textContent = '保存中…'
+  }
+  try {
+    await api.me.setScanRoots(checked)
+    await nasLoadRoots()
+    toast('扫描目录已保存')
+  } catch (err) {
+    toast(err.status === 400 ? `保存失败：目录不在服务端可用列表内（${err.message}）` : `保存失败：${err.message}`)
+  } finally {
+    nasState.rootsSaving = false
+    renderNasRoots()
+  }
+}
+
+/** 开始扫描：先同步未保存勾选（PUT 幂等）再 POST scan；400 无根 / 409 已在扫描 */
+async function nasStartScan() {
+  const checked = $$('#nas-roots input[type="checkbox"]:checked').map((i) => i.value)
+  const btn = $('#nas-scan')
+  try {
+    // 勾选与已保存 selected 不一致时先落盘（用户「勾完直接扫」的直觉路径）
+    const cur = new Set((nasState.roots?.selected || []).filter((s) => s && s.enabled !== false).map((s) => s.path))
+    const same = checked.length === cur.size && checked.every((p) => cur.has(p))
+    if (checked.length && !same) await api.me.setScanRoots(checked)
+
+    await api.library.scan()
+    toast('已开始扫描 NAS 音乐目录')
+    nasState.scanning = true
+    nasState.progress = null
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = '扫描中…'
+    }
+    nasUpdateProgress()
+  } catch (err) {
+    if (err.status === 400) toast('请先勾选至少一个扫描目录并保存')
+    else if (err.status === 409) {
+      toast('扫描正在进行中，请稍候')
+      nasState.scanning = true
+      nasUpdateProgress()
+    } else {
+      toast(`扫描启动失败：${err.message}`)
+    }
+    if (btn && !nasState.scanning) {
+      btn.disabled = false
+      btn.textContent = '开始扫描'
+    }
+  }
+}
+
+/** SSE scan:progress（全局单连接；扫描完成重拉数据，进行中仅局部更新进度条） */
+function onNasScanProgress(d) {
+  if (!d) return
+  nasState.progress = d
+  const done = d.phase === 'done' || (d.total > 0 && (d.scanned || 0) >= d.total)
+  if (done && nasState.scanning) {
+    nasState.scanning = false
+    const summary = `NAS 扫描完成：新增 ${d.added ?? 0} · 更新 ${d.updated ?? 0} · 移除 ${d.removed ?? 0}`
+    toast(summary, 4200)
+    if (libDim === 'nas') {
+      renderNas()
+      nasLoadRoots().then(renderNasRoots)
+      nasLoadTracks(true)
+    }
+    return
+  }
+  if (!done) nasState.scanning = true
+  if (libDim === 'nas') nasUpdateProgress()
+}
+
+/** NAS 行 HTML（封面 404 → onerror 移除 img 露出渐变占位；点击整行播放） */
+function nasRowHtml(t) {
+  const tid = String(t.id)
+  const pid = `nas:${tid}`
+  const dur = t.durationMs ? fmtDur(t.durationMs / 1000) : '--:--'
+  const fmt = String(t.format || '').toUpperCase()
+  return `
+  <div class="nas-row" role="listitem" data-id="${escapeHtml(pid)}" tabindex="0" title="点击播放">
+    <div class="nas-cover" aria-hidden="true">
+      <img src="/api/v1/library/tracks/${encodeURIComponent(tid)}/cover" alt="" loading="lazy" onerror="this.remove()" />
+      <svg class="nas-note" viewBox="0 0 24 24" width="17" height="17"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
+      <span class="nas-eq" aria-hidden="true"><i></i><i></i><i></i></span>
+      <button class="nas-play" type="button" aria-label="播放 ${escapeHtml(t.title || '这首 NAS 曲目')}">
+        <svg viewBox="0 0 10 12" width="10" height="12" fill="currentColor" aria-hidden="true"><path d="M0 0l10 6-10 6z"/></svg>
+      </button>
+    </div>
+    <div class="nas-info">
+      <div class="nas-name">${escapeHtml(t.title || '未知曲目')}</div>
+      <div class="nas-artist">${escapeHtml(t.artist || '未知艺术家')}${t.album ? ` · ${escapeHtml(t.album)}` : ''}</div>
+    </div>
+    <div class="nas-right">
+      ${fmt ? `<span class="nas-fmt">${escapeHtml(fmt)}</span>` : ''}
+      <span class="nas-dur">${dur}</span>
+    </div>
+  </div>`
+}
+
+/** NAS 曲目列表渲染（骨架/错误/空态/列表 + 加载更多分页） */
+function renderNasTracks() {
+  const box = $('#nas-tracks')
+  if (!box) return
+  const more = $('#nas-more')
+  if (more) more.hidden = true
+
+  if (nasState.loading && !nasState.tracks.length) {
+    box.innerHTML = `<div class="nas-list" aria-hidden="true">${Array.from({ length: 6 })
+      .map(
+        () => `
+  <div class="nas-row nas-row-sk">
+    <div class="hp-sk nas-sk-cover"></div>
+    <div class="nas-sk-info"><span class="hp-sk hp-sk-line w60"></span><span class="hp-sk hp-sk-line w32"></span></div>
+    <span class="hp-sk nas-sk-dur"></span>
+  </div>`,
+      )
+      .join('')}</div>`
+    return
+  }
+  if (nasState.err && !nasState.tracks.length) {
+    box.innerHTML = `<div class="nas-empty">NAS 曲库加载失败：${escapeHtml(nasState.err.message || '未知错误')}<button class="nas-retry" id="nas-retry" type="button">重试</button></div>`
+    $('#nas-retry')?.addEventListener('click', () => nasEnsure())
+    return
+  }
+  if (!nasState.tracks.length) {
+    const hasSelected = nasState.roots && (nasState.roots.selected || []).some((s) => s && s.enabled !== false)
+    box.innerHTML = `
+      <div class="nas-empty">
+        <div class="nas-empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5.5A1.5 1.5 0 0 1 4.5 4h4l2 2.5h7A1.5 1.5 0 0 1 19 8v1"/><path d="M3 9h17.2a1 1 0 0 1 .98 1.2l-1.5 7A1.6 1.6 0 0 1 18.1 18.4H5.4a1.6 1.6 0 0 1-1.57-1.28L2.2 10.2A1 1 0 0 1 3 9z"/></svg>
+        </div>
+        <p>${hasSelected ? '所选目录中暂未发现音频文件' : '尚未扫描 NAS 音乐目录'}</p>
+        <p class="nas-empty-sub">在飞牛 NAS 部署后可扫描共享目录中的音乐；本地开发环境可通过环境变量 RO_SCAN_ROOTS 指定目录</p>
+      </div>`
+    return
+  }
+  box.innerHTML = `<div class="nas-list" role="list">${nasState.tracks.map(nasRowHtml).join('')}</div>`
+  nasHighlightNow()
+  if (more) {
+    more.hidden = nasState.offset >= nasState.total
+    more.disabled = nasState.loading
+    more.textContent = nasState.loading ? '加载中…' : '加载更多'
+  }
+}
+
+/** 当前播放 NAS 行高亮（renderNasTracks 尾部调用） */
+function nasHighlightNow() {
+  const cur = player.currentTask()
+  $$('#nas-tracks .nas-row').forEach((row) => {
+    row.classList.toggle('now-playing', !!cur && row.dataset.id === cur)
+  })
+}
+
+/** NAS 行点击：当前已加载曲目入队播放（与歌曲维度 onSongClick 同语义） */
+function onNasRowClick(e) {
+  const row = e.target.closest('.nas-row')
+  if (!row) return
+  const q = nasState.tracks.map(nasTrackToPlayer)
+  if (!q.length) return
+  player.playQueue(q, row.dataset.id)
+}
+
+/** NAS 搜索：防抖 350ms 后重置分页重拉（q 变化才发请求） */
+function onNasSearchInput(e) {
+  clearTimeout(nasSearchTimer)
+  const kw = e.target.value.trim()
+  nasSearchTimer = setTimeout(() => {
+    if (nasState.q === kw) return
+    nasState.q = kw
+    nasLoadTracks(true)
+  }, NAS_SEARCH_DEBOUNCE)
+}
+
+/** NAS 面板初始化（init 一次注册） */
+function initNas() {
+  $('#nas-search')?.addEventListener('input', onNasSearchInput)
+  $('#nas-refresh')?.addEventListener('click', () => {
+    nasLoadStatus().then(() => {
+      renderNas()
+      if (!nasState.scanning) nasLoadTracks(true)
+    })
+    nasLoadRoots().then(renderNasRoots)
+  })
+  $('#nas-more')?.addEventListener('click', () => nasLoadTracks(false))
+  $('#nas-tracks')?.addEventListener('click', onNasRowClick)
+  sse.on('scan:progress', onNasScanProgress)
 }

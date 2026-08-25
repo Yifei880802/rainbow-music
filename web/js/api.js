@@ -54,6 +54,33 @@ export const api = {
   auth: {
     status: () => request('/auth/status'),
     logout: () => post('/auth/logout'),
+    /** v0.2.1 模块六：网关实例 FN ID 免密登录（本地实例 404；仅 login.js 网关分支消费） */
+    gatewayLogin: () => post('/auth/gateway-login'),
+  },
+
+  // ---------- 1.5 用户身份与个性化（v0.2.1 模块六：FN ID 多用户） ----------
+  me: {
+    get: () => request('/me'),
+    scanRoots: () => request('/me/scan-roots'),
+    /** PUT {paths:[...]}；越界路径 400 */
+    setScanRoots: (paths) => putReq('/me/scan-roots', { paths }),
+    /** GET ?limit= → {history:[...]} */
+    history: (limit) => request(`/me/history${qs({ limit })}`),
+    /** POST {track:任意JSON}（播放上报，前端节流防刷） */
+    addHistory: (track) => post('/me/history', { track }),
+    favorites: () => request('/me/favorites'),
+    addFavorite: (kind, ref) => post('/me/favorites', { kind, ref }),
+    removeFavorite: (kind, ref) => del(`/me/favorites/${enc(kind)}/${enc(ref)}`),
+  },
+
+  // ---------- 1.6 本地音乐库（v0.2.1 模块六：NAS 扫描曲库） ----------
+  library: {
+    /** POST 扫描 → 202 {ok,jobId}（无根 400 / 扫描中 409） */
+    scan: () => post('/library/scan'),
+    /** → {scanning,last?,progress?{phase,scanned,total,added,updated,removed,currentRoot}} */
+    scanStatus: () => request('/library/scan/status'),
+    /** ?limit&offset&q&artist&album&sort → {tracks,total,offset,limit} */
+    tracks: (p) => request(`/library/tracks${qs(p)}`),
   },
 
   // ---------- 2. 搜索 ----------
