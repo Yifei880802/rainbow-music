@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Rainbow Music 彩虹音乐 — 跨平台聚合搜索、无损音乐下载与本地曲库管理" />
+  <title>Rainbow Music · 彩虹音乐</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="app">
+    <!-- ===== 左侧固定侧边栏（毛玻璃深色） ===== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sb-brand">
+        <span class="sb-logo" aria-hidden="true">🌈</span>
+        <span class="sb-name">Rainbow<br /><small>MUSIC</small></span>
+        <!-- P2：侧栏窄图标模式折叠钮（≥1280px 显示，localStorage 记忆；窄屏抽屉行为不变） -->
+        <button id="sb-collapse" class="sb-collapse" type="button" aria-label="折叠侧边栏" title="折叠侧边栏" aria-expanded="true">
+          <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M8 1.5L3.5 6 8 10.5"/></svg>
+        </button>
+      </div>
+
+      <nav class="sb-nav" aria-label="主导航">
+        <!-- #60：搜索独立置首（存量 id data-tab="search" 只改 label 不改 id）；发现=热门歌单首页 -->
+        <a href="#" class="tab" data-tab="search" title="搜索">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <span>搜索</span>
+        </a>
+        <a href="#" class="tab active" data-tab="home" title="发现">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 11a8.5 8.5 0 1 1 17 0"/><path d="M12 11l4.5 4.5"/><path d="M3.5 11L1.5 13M20.5 11l2 2"/><circle cx="12" cy="11" r="2.2"/></svg>
+          <span>发现</span>
+        </a>
+        <a href="#" class="tab" data-tab="library" title="本地收藏">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h4v15H4zM10 5h4v15h-4z"/><path d="M16.5 5.8l4 1-3.6 13.4-4-1z"/></svg>
+          <span>本地收藏</span>
+        </a>
+        <a href="#" class="tab" data-tab="playlists" title="歌单">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 6h12M4 11h12M4 16h7"/><path d="M17 13.5v6"/><circle cx="15.4" cy="19.5" r="1.6" fill="currentColor" stroke="none"/><path d="M17 13.5l3-1"/></svg>
+          <span>歌单</span>
+        </a>
+        <a href="#" class="tab" data-tab="settings" title="设置">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18"/></svg>
+          <span>设置</span>
+        </a>
+      </nav>
+
+      <div class="sb-section-label" id="sb-recent-label" hidden>最近播放</div>
+      <nav class="sb-recent" id="sb-recent" aria-label="最近播放" hidden></nav>
+
+      <div class="sb-section-label">系统</div>
+      <nav class="sb-nav sb-nav-sub" aria-label="系统入口">
+        <a href="#" class="tab" data-tab="sources" title="音源">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6"/><path d="M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/></svg>
+          <span>音源</span>
+        </a>
+        <a href="#" class="tab" data-tab="health" title="健康">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 4 12 2.5-6h5"/></svg>
+          <span>健康</span>
+        </a>
+      </nav>
+
+      <div class="sb-foot">
+        <span class="sse-ind" title="实时连接状态"><i id="sse-dot" class="sse-dot" data-state="init"></i><span class="sse-ind-txt">实时同步</span></span>
+        <button id="logout-btn" class="sb-logout" type="button" title="登出" hidden>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h-8v16h8M10 12h11M18 8.5L21.5 12 18 15.5"/></svg>
+          <span>登出</span>
+        </button>
+      </div>
+    </aside>
+    <div class="sb-backdrop" id="sb-backdrop" hidden></div>
+
+    <!-- ===== 右侧主内容区 ===== -->
+    <div class="main-wrap">
+      <header class="topbar">
+        <button id="nav-toggle" type="button" aria-label="打开导航">
+          <svg viewBox="0 0 18 14" width="18" height="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M1 1h16M1 7h16M1 13h16"/></svg>
+        </button>
+        <span class="topbar-brand">Rainbow Music</span>
+        <!-- #63 D1：顶栏全局搜索 pill（入口语义：回车跳搜索页执行完整搜索；点击/聚焦
+             跳搜索页聚焦主框 #keyword——联想+历史集中在搜索页，pill 保持轻量不做联想） -->
+        <form id="topbar-search-form" class="topbar-search" role="search">
+          <svg class="ts-ico" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+          <input type="text" id="topbar-search" placeholder="搜索歌曲、歌手…" autocomplete="off" aria-label="全局搜索" />
+          <kbd class="ts-kbd" aria-hidden="true">/</kbd>
+        </form>
+      </header>
+
+      <main>
+        <!-- 发现（#60 热门歌单聚合首页，默认视图） -->
+        <section id="view-home" class="view active">
+          <div id="hp-home">
+            <div class="hp-head">
+              <div class="hp-head-main">
+                <p class="hp-greet" id="hp-greet">你好</p>
+                <h2 class="view-title">发现</h2>
+              </div>
+              <span class="hp-meta" id="hp-meta"></span>
+            </div>
+            <p class="view-sub">今日更新的热歌榜单</p>
+            <!-- #62 P1：横幅推荐位（固定「热歌榜·网易云」，blur 24 毛玻璃铺底；JS 动态填充） -->
+            <div id="hp-banner" class="hp-banner" hidden></div>
+            <!-- #62 P1：平台分组 tab（全部/网易云/QQ/酷狗/酷我/咪咕；单选过滤 + rainbow.hpTab 记忆） -->
+            <div id="hp-tabs" class="hp-tabs"></div>
+            <div id="hp-grid" class="hp-grid"></div>
+
+            <!-- #67：精选歌单广场分区（榜单之下独立分区；tab 只过滤上方榜单网格，本分区
+                 不受 tab 影响（广场是 wy/tx UGC 歌单，与平台榜单不同类，且自带分类/翻页控件，
+                 叠加 tab 会造成双重过滤心智 + tx-only tab 下 wy 分类失效的矛盾态）） -->
+            <section id="sq-section" class="sq-section" aria-label="精选歌单">
+              <div class="sq-head">
+                <div class="sq-title-wrap">
+                  <h3 class="sq-title">精选歌单</h3>
+                  <span class="sq-sub" id="sq-sub"></span>
+                </div>
+                <div class="sq-tools">
+                  <!-- wy 分类词下拉（tx 固定推荐位，不受此下拉影响）；切分类重拉第一页 -->
+                  <select id="sq-cat" class="sq-cat" aria-label="歌单分类"></select>
+                  <button id="sq-more" type="button" title="换一批广场歌单">换一批</button>
+                </div>
+              </div>
+              <div id="sq-grid" class="hp-grid sq-grid"></div>
+            </section>
+          </div>
+
+          <!-- 歌单详情 drill 态（#57 范式：blur 大封面横幅 + 榜单列表 + 过滤） -->
+          <div id="hp-detail" hidden>
+            <div class="lib-crumb hp-crumb">
+              <button id="hp-back" type="button" title="返回榜单首页">
+                <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M8 1.5L3.5 6 8 10.5"/></svg>
+                返回
+              </button>
+              <span id="hp-crumb-txt"></span>
+            </div>
+            <div class="hp-hero">
+              <div class="hp-hero-bg" aria-hidden="true"><img id="hp-hero-bgimg" alt="" /></div>
+              <div class="hp-hero-fg">
+                <span class="hp-hero-cover" aria-hidden="true">
+                  <svg class="hp-hero-note" viewBox="0 0 24 24" width="44" height="44"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
+                  <img id="hp-hero-img" alt="" />
+                </span>
+                <div class="hp-hero-info">
+                  <div class="hp-hero-tags">
+                    <span id="hp-hero-plat" class="hp-pill"></span>
+                    <span id="hp-hero-update" class="hp-pill hp-pill-acc" hidden>今日更新</span>
+                    <span id="hp-hero-virtual" class="hp-pill hp-pill-virtual" hidden>精选</span>
+                  </div>
+                  <h3 class="hp-hero-title" id="hp-hero-title"></h3>
+                  <p class="hp-hero-meta" id="hp-hero-meta"></p>
+                  <div class="hp-hero-actions">
+                    <button id="hp-play-all" class="hp-btn-main" type="button">▶ 播放全部</button>
+                    <button id="hp-dl-all" type="button">⬇ 下载全部</button>
+                    <!-- #66 P0-3：一键收藏当前榜单为本地个人歌单（POST /api/v1/playlists/import） -->
+                    <button id="hp-save-pl" type="button" title="将当前榜单保存为本地歌单">☆ 收藏歌单</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="hp-filter-row">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+              <input type="text" id="hp-filter" placeholder="过滤歌曲 / 艺人" autocomplete="off" />
+              <span id="hp-filter-count" class="hp-filter-count"></span>
+            </div>
+            <div id="hp-songs" class="hp-song-list"></div>
+            <div class="hp-more-row"><button id="hp-more" type="button" hidden></button></div>
+          </div>
+        </section>
+
+        <!-- 搜索（原发现页，#60 导航置首；id 不变仅改 label） -->
+        <section id="view-search" class="view">
+          <div class="view-head">
+            <h2 class="view-title">搜索</h2>
+            <p class="view-sub">跨平台搜索 · 无损音质 · 一键收入本地</p>
+          </div>
+
+          <form id="search-form" class="search-bar">
+            <input type="text" id="keyword" placeholder="歌曲名 / 歌手 / 专辑 / 歌单" autocomplete="off" required />
+            <select id="search-type">
+              <option value="song">歌曲</option>
+              <option value="songlist">歌单</option>
+            </select>
+            <select id="platform">
+              <option value="aggregate">聚合(全平台)</option>
+              <option value="kw">酷我</option>
+              <option value="kg">酷狗</option>
+              <option value="tx">QQ音乐</option>
+              <option value="wy">网易云</option>
+              <option value="mg">咪咕</option>
+            </select>
+            <select id="quality">
+              <option value="flac24bit">Hi-Res (flac24bit)</option>
+              <option value="flac" selected>无损 (flac)</option>
+              <option value="320k">320k</option>
+              <option value="128k">128k</option>
+            </select>
+            <button type="submit">搜索</button>
+          </form>
+
+          <div class="toolbar" id="search-toolbar" hidden>
+            <label class="chk-all"><input type="checkbox" id="check-all" /> 全选</label>
+            <span id="selected-count">已选 0 首</span>
+            <button id="batch-download" disabled>批量下载选中</button>
+            <button id="batch-add-playlist" disabled>加入歌单</button>
+          </div>
+
+          <div id="search-status" class="status"></div>
+          <div id="results"></div>
+        </section>
+
+        <!-- 本地收藏（已下载曲库 + 下载队列） -->
+        <section id="view-library" class="view">
+          <div class="view-head">
+            <h2 class="view-title">本地收藏</h2>
+            <p class="view-sub">已下载到本地的歌曲 · 点击即播</p>
+          </div>
+          <div class="toolbar">
+            <button id="refresh-library">刷新</button>
+            <button id="play-all" disabled>▶ 播放全部</button>
+            <!-- #57：曲库维度三段钮（歌曲=现状默认 / 专辑 / 艺人聚合；localStorage rainbow.libDim 记忆，
+                 窄屏保留——文字短标签不依赖图标语义；点击卡片进入过滤态后由面包屑返回） -->
+            <div class="lib-dim-seg" id="lib-dim-seg" role="group" aria-label="曲库维度切换">
+              <button id="lib-dim-song" type="button" class="on" aria-pressed="true" title="按歌曲浏览（默认）">歌曲</button>
+              <button id="lib-dim-album" type="button" aria-pressed="false" title="按专辑聚合浏览">专辑</button>
+              <button id="lib-dim-artist" type="button" aria-pressed="false" title="按艺人聚合浏览">艺人</button>
+            </div>
+            <!-- #56：曲库排序（纯前端内存排序，会话级不持久化；方向钮点击同项切升降序） -->
+            <div class="lib-sort-box" role="group" aria-label="曲库排序">
+              <select id="lib-sort" aria-label="排序方式" title="排序方式">
+                <option value="added" selected>添加时间</option>
+                <option value="title">标题</option>
+                <option value="artist">艺术家</option>
+                <option value="duration">时长</option>
+              </select>
+              <button id="lib-sort-dir" class="lib-ico-btn" type="button" title="降序（点击切换）" aria-label="切换排序方向">
+                <svg class="lsd-desc" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5v9M2.5 7L6 10.5 9.5 7"/></svg>
+              </button>
+            </div>
+            <span id="library-summary"></span>
+            <!-- #56：列表密度三档（舒适 56 默认 / 紧凑 44 / 宽松 68；仅列表视图可见，localStorage rainbow.libDensity 记忆） -->
+            <button id="lib-density" class="lib-ico-btn" type="button" title="列表密度：舒适" aria-label="切换列表密度">
+              <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M1.5 3.2h11M1.5 7h11M1.5 10.8h11"/></svg>
+            </button>
+            <!-- #53 P1a：网格/列表双视图分段控件（Hume 胶囊二段；localStorage rainbow.libView 记忆，默认网格；≤900px 由 CSS 隐藏） -->
+            <div class="lib-view-seg" id="lib-view-seg" role="group" aria-label="本地收藏视图切换">
+              <button id="lib-view-grid" type="button" class="on" aria-pressed="true" title="网格视图">
+                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="1.2" y="1.2" width="4.8" height="4.8" rx="1.3"/><rect x="8" y="1.2" width="4.8" height="4.8" rx="1.3"/><rect x="1.2" y="8" width="4.8" height="4.8" rx="1.3"/><rect x="8" y="8" width="4.8" height="4.8" rx="1.3"/></svg>
+              </button>
+              <button id="lib-view-list" type="button" aria-pressed="false" title="列表视图">
+                <svg viewBox="0 0 14 14" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M1.5 3.2h11M1.5 7h11M1.5 10.8h11"/></svg>
+              </button>
+            </div>
+          </div>
+          <!-- #57：聚合过滤态面包屑（专辑/艺人卡点击进入；返回钮退回聚合网格；JS 控制显隐） -->
+          <div class="lib-crumb" id="lib-crumb" hidden>
+            <button id="lib-crumb-back" type="button" title="返回专辑/艺人列表">
+              <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" fill="none" aria-hidden="true"><path d="M8 1.5L3.5 6 8 10.5"/></svg>
+              返回
+            </button>
+            <span id="lib-crumb-txt"></span>
+          </div>
+          <!-- #56：筛选 chips（平台组 + 刮削状态组，组内单选、组间叠加；会话级不持久化，内容 JS 动态生成） -->
+          <div class="lib-filters" id="lib-filters" hidden></div>
+          <div id="library-songs"></div>
+
+          <section id="library-queue" hidden>
+            <div class="queue-head">
+              <h3>下载队列</h3>
+              <span id="queue-summary" class="queue-summary"></span>
+            </div>
+            <div id="library-queue-list"></div>
+          </section>
+        </section>
+
+        <!-- 歌单 -->
+        <section id="view-playlists" class="view">
+          <div class="view-head">
+            <h2 class="view-title">歌单</h2>
+            <p class="view-sub">整理与收藏你的曲目合辑</p>
+          </div>
+          <div class="toolbar">
+            <input type="text" id="new-playlist-name" placeholder="新歌单名称" class="name-in" />
+            <button id="create-playlist">创建歌单</button>
+            <button id="refresh-playlists">刷新</button>
+            <span id="playlists-summary"></span>
+          </div>
+          <div id="playlists"></div>
+          <div id="playlist-detail" hidden></div>
+        </section>
+
+        <!-- 设置 -->
+        <section id="view-settings" class="view">
+          <div class="view-head">
+            <h2 class="view-title">设置</h2>
+            <p class="view-sub">下载偏好 · 密钥 · 告警渠道</p>
+          </div>
+          <div id="settings-body"><div class="empty">加载中…</div></div>
+        </section>
+
+        <!-- 音源管理 -->
+        <section id="view-sources" class="view">
+          <div class="view-head">
+            <h2 class="view-title">音源</h2>
+            <p class="view-sub">导入与管理搜索源插件</p>
+          </div>
+          <div class="import-panel">
+            <div class="import-block">
+              <h4>在线 URL 导入</h4>
+              <div class="import-row">
+                <input type="text" id="src-url" placeholder="https://.../source.js" />
+                <input type="text" id="src-url-name" placeholder="名称(可选)" class="name-in" />
+                <button id="src-url-btn">导入</button>
+              </div>
+            </div>
+            <div class="import-block">
+              <h4>本地文件上传</h4>
+              <div class="import-row">
+                <input type="file" id="src-file" accept=".js" />
+                <button id="src-file-btn">上传</button>
+              </div>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button id="refresh-sources">刷新</button>
+            <!-- #56：一键快速冒烟（同步返回矩阵，音源串行/平台并行≤3/整体 60s 预算） -->
+            <button id="src-smoke">一键冒烟测试</button>
+            <span id="sources-summary"></span>
+          </div>
+          <!-- #56：快速冒烟结果矩阵（行=启用音源，列=平台，每格 搜索/取链 双态） -->
+          <div id="src-smoke-result" hidden></div>
+          <div id="sources"></div>
+        </section>
+
+        <!-- 健康状态 -->
+        <section id="view-health" class="view">
+          <div class="view-head">
+            <h2 class="view-title">健康</h2>
+            <p class="view-sub">音源 × 平台冒烟测试矩阵</p>
+          </div>
+          <div class="toolbar">
+            <button id="run-smoke">立即冒烟测试</button>
+            <button id="refresh-health">刷新</button>
+            <span id="health-summary"></span>
+          </div>
+          <div id="health-matrix"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <!-- 右侧 Now Playing 沉浸面板（≥1280px；由 js/player.js 驱动，#pb-expand 展开）
+       P2：data-tab 切换「歌词 / 队列」两个面板区；歌词区拉 /api/v1/lyric/:taskId 渲染滚动歌词 -->
+  <aside id="np-panel" class="np-panel" data-tab="lyric" aria-hidden="true" aria-label="正在播放">
+    <button id="np-close" class="np-close" type="button" aria-label="收起面板" title="收起面板">
+      <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" aria-hidden="true"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+    </button>
+    <div class="np-cover-card">
+      <span class="np-tag" aria-hidden="true">Now Playing</span>
+      <div class="np-cover-slot" aria-hidden="true">
+        <svg class="np-cover-note" viewBox="0 0 24 24" width="54" height="54"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
+        <img id="np-cover" class="np-cover-img" alt="" hidden />
+      </div>
+    </div>
+    <h2 id="np-title" class="np-title">未在播放</h2>
+    <p id="np-artist" class="np-artist">从「本地收藏」选一首开始吧</p>
+    <!-- #52 np 面板播放控制（与 #pb-toggle 同一套 ic-play/ic-pause 图标语系，hidden 切换表达播放态） -->
+    <div class="np-controls">
+      <button id="np-prev" class="np-ctl" type="button" aria-label="上一首" title="上一首" disabled>
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M3 2h2v12H3zM13 2v12L5.5 8z"/></svg>
+      </button>
+      <button id="np-play" class="np-ctl np-ctl-main" type="button" aria-label="播放/暂停" title="播放/暂停">
+        <svg class="ic-play" viewBox="0 0 20 20" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M6 3.5v13l11-6.5z"/></svg>
+        <svg class="ic-pause" viewBox="0 0 20 20" width="18" height="18" fill="currentColor" hidden aria-hidden="true"><path d="M5 3h3.4v14H5zM11.6 3H15v14h-3.4z"/></svg>
+      </button>
+      <button id="np-next" class="np-ctl" type="button" aria-label="下一首" title="下一首" disabled>
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M11 2h2v12h-2zM3 2v12l7.5-6z"/></svg>
+      </button>
+    </div>
+    <!-- P2：迷你频谱（Web Audio AnalyserNode，20 根橙色渐变柱；暂停归零、减弱动效降级三柱） -->
+    <div id="np-spec" class="np-spec" aria-hidden="true"></div>
+    <div class="np-tabs" role="tablist" aria-label="正在播放面板视图">
+      <button id="np-tab-lyric" class="np-tab active" type="button" role="tab" aria-selected="true" aria-controls="np-lyric">歌词</button>
+      <button id="np-tab-queue" class="np-tab" type="button" role="tab" aria-selected="false" aria-controls="np-queue">队列</button>
+    </div>
+    <div id="np-lyric" class="np-lyric" role="tabpanel" aria-label="歌词">
+      <div id="np-lyric-scroll" class="np-lyric-scroll"></div>
+    </div>
+    <div class="np-queue-label" aria-hidden="true">播放队列</div>
+    <div id="np-queue" class="np-queue"></div>
+  </aside>
+
+  <!-- 底部播放栏（默认隐藏，播放时滑入；由 js/player.js 驱动） -->
+  <div id="player-bar" class="player-bar" aria-hidden="true">
+    <div class="pb-track">
+      <div class="pb-disc" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
+        <img id="pb-cover" class="pb-cover" alt="" hidden />
+      </div>
+      <div class="pb-meta">
+        <div id="pb-title" class="pb-title">未在播放</div>
+        <div id="pb-artist" class="pb-artist"></div>
+      </div>
+    </div>
+
+    <div class="pb-center">
+      <div class="pb-controls">
+        <button id="pb-shuffle" class="pb-mode" type="button" aria-label="随机播放" title="随机播放" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.7-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></svg>
+        </button>
+        <button id="pb-prev" class="pb-nav" type="button" aria-label="上一首" title="上一首">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M3 2h2v12H3zM13 2v12L5.5 8z"/></svg>
+        </button>
+        <button id="pb-toggle" class="pb-main" type="button" aria-label="播放/暂停">
+          <svg class="ic-play" viewBox="0 0 20 20" width="20" height="20" fill="currentColor"><path d="M6 3.5v13l11-6.5z"/></svg>
+          <svg class="ic-pause" viewBox="0 0 20 20" width="20" height="20" fill="currentColor" hidden><path d="M5 3h3.4v14H5zM11.6 3H15v14h-3.4z"/></svg>
+        </button>
+        <button id="pb-next" class="pb-nav" type="button" aria-label="下一首" title="下一首">
+          <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor"><path d="M11 2h2v12h-2zM3 2v12l7.5-6z"/></svg>
+        </button>
+        <button id="pb-repeat" class="pb-mode pb-repeat" type="button" aria-label="循环播放" title="循环播放" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>
+        </button>
+      </div>
+      <div class="pb-progress">
+        <span id="pb-cur" class="pb-time">0:00</span>
+        <div id="pb-seek" class="pb-seek" role="slider" tabindex="0" aria-label="播放进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0:00 / 0:00">
+          <div id="pb-fill" class="pb-seek-fill"><i class="pb-thumb"></i></div>
+        </div>
+        <span id="pb-dur" class="pb-time">0:00</span>
+      </div>
+    </div>
+
+    <div class="pb-right">
+      <div class="pb-vol" title="音量">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M2 6v4h2.6L8 13V3L4.6 6z"/><path d="M10.5 5.2a4 4 0 010 5.6" stroke="currentColor" fill="none" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <div id="pb-voltrack" class="pb-voltrack" role="slider" tabindex="0" aria-label="音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="80" aria-valuetext="80%"><div id="pb-volfill" class="pb-volfill"></div></div>
+      </div>
+      <button id="pb-expand" class="pb-mode pb-expand" type="button" aria-label="展开正在播放面板" title="展开正在播放面板" aria-expanded="false">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h6"/><circle cx="12.2" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
+      </button>
+      <button id="pb-close" class="pb-close" type="button" aria-label="关闭播放器" title="关闭播放器">
+        <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+      </button>
+    </div>
+
+    <audio id="pb-audio" preload="metadata"></audio>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
