@@ -1,0 +1,9 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 配置向导钩子：config_init
+#
+# 应用设置页打开前执行：无额外动作（向导字段由 wizard/config 静态定义）。
+
+set -eu
+
+exit 0
