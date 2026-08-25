@@ -1,0 +1,194 @@
+#!/bin/bash
+#
+# Rainbow 音乐下载 — 生命周期脚本公共函数库
+#
+# 供 cmd/ 下各生命周期脚本 source（fnpack 要求 9 个独立脚本，
+# 公共逻辑集中于此，避免重复）。各脚本均以 set -eu 启动。
+#
+# 约定：
+#   - 所有路径只用 TRIM_* 环境变量，不硬编码
+#   - 幂等：重复执行各钩子不报错、不破坏已有数据
+#   - 失败信息写入 $TRIM_TEMP_LOGFILE 后 exit 1（会展示给用户）
+
+APP_NAME="com.rainbow.music"
+COMPOSE_PROJECT="rainbow-music"
+COMPOSE_FILE="${TRIM_APPDEST:-}/docker/docker-compose.yaml"
+CONFIG_FILE="${TRIM_PKGETC:-}/config.yaml"
+DEFAULT_PORT="23330"
+
+# ---------- 通用工具 ----------
+
+log_error() {
+    # 用户可见错误：写 TRIM_TEMP_LOGFILE 后退出
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+        printf '%s\n' "$1" > "$TRIM_TEMP_LOGFILE"
+    fi
+    printf '[%s] ERROR: %s\n' "$APP_NAME" "$1" >&2
+    exit 1
+}
+
+log_info() {
+    printf '[%s] %s\n' "$APP_NAME" "$1" >&2
+}
+
+dc() {
+    # 兼容 docker compose（v2 插件）与 docker-compose（v1 独立）
+    if docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    else
+        log_error "未找到 docker compose（docker compose / docker-compose 均不可用），请先安装 Docker"
+    fi
+}
+
+compose_file_ok() {
+    [ -n "$COMPOSE_FILE" ] && [ -f "$COMPOSE_FILE" ]
+}
+
+read_port() {
+    # 从 config.yaml 读 server.port，读不到退回默认值
+    local p=""
+    if [ -f "$CONFIG_FILE" ]; then
+        p=$(awk '/^server:/{f=1;next} f && /^  port:/{print $2; exit} /^[^ ]/{f=0}' "$CONFIG_FILE" | tr -d '"' | tr -d "'" | tr -d ' ')
+    fi
+    case "$p" in
+        ''|*[!0-9]*) echo "$DEFAULT_PORT" ;;
+        *) echo "$p" ;;
+    esac
+}
+
+probe_status() {
+    # 0=存活（任何 <500 的 HTTP 响应，含 401） 3=未运行
+    local port http_code
+    port=$(read_port)
+    if ! command -v curl >/dev/null 2>&1; then
+        # 没有 curl 就退而检查容器状态
+        if docker inspect -f '{{.State.Running}}' rainbow 2>/dev/null | grep -q true; then
+            return 0
+        fi
+        return 3
+    fi
+    http_code=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://127.0.0.1:${port}/api/v1/status" 2>/dev/null || true)
+    [ -n "$http_code" ] || http_code=000
+    case "$http_code" in
+        000|0*|5*) return 3 ;;
+        *) return 0 ;;
+    esac
+}
+
+# ---------- 配置渲染 ----------
+
+default_download_dir() {
+    # 优先取 data-share 托管的共享目录（rainbow-music），用户可在文件管理器直接看到下载结果；
+    # 没有共享目录时退回 ${TRIM_PKGVAR}/downloads（安装向导可覆盖）
+    if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
+        printf '%s' "${TRIM_DATA_SHARE_PATHS%%:*}"
+    else
+        printf '%s/downloads' "${TRIM_PKGVAR:-}"
+    fi
+}
+
+sed_escape_rhs() {
+    # 转义 sed 替换右侧的 \ & 与分隔符 |
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+yaml_dquote_escape() {
+    # YAML 双引号标量转义：先转 \ 再转 "（顺序不可颠倒）。
+    # 用于密码/下载目录等用户可控字符串：无引号 plain scalar 遇 ` #` 会被截断、
+    # 以 &/*/@ 开头或含 `: ` 会解析失败，统一用双引号包裹后安全注入
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+render_config() {
+    # $1=密码(必填) $2=端口 $3=下载目录；幂等：已存在则跳过
+    local pass="$1" port="$2" ddir="$3"
+    if [ -z "$pass" ]; then
+        log_error "登录密码不能为空，请在向导中填写密码"
+    fi
+    [ -n "$port" ] || port="$DEFAULT_PORT"
+    [ -n "$ddir" ] || ddir=$(default_download_dir)
+    mkdir -p "${TRIM_PKGETC:?}"
+    if [ -f "$CONFIG_FILE" ]; then
+        log_info "已存在 ${CONFIG_FILE}，跳过初始化渲染"
+        return 0
+    fi
+    local pass_esc ddir_esc
+    # 双引号标量注入：先 YAML 转义（\ 与 "），再 sed RHS 转义
+    pass_esc=$(sed_escape_rhs "$(yaml_dquote_escape "$pass")")
+    ddir_esc=$(sed_escape_rhs "$(yaml_dquote_escape "$ddir")")
+    cat > "$CONFIG_FILE" <<'YAML'
+server:
+  host: 0.0.0.0
+  port: __RO_PORT__
+auth:
+  enabled: true
+  apiKey: ""
+  webLogin:
+    username: admin
+    password: "__RO_PASS__"
+download:
+  dir: "__RO_DOWNLOAD_DIR__"
+  concurrency: 3
+  defaultQuality: flac
+  nameTemplate: "{name} - {singer}"
+  embedCover: true
+  embedLyric: true
+  coverSize: 500
+sources:
+  dir: data/sources
+  hotReload: true
+rateLimit:
+  enabled: true
+  windowMs: 60000
+  max: 300
+smokeTest:
+  enabled: true
+  cron: 0 6 * * *
+  keyword: 周杰伦
+  checkLyric: true
+  checkPic: true
+  alertThreshold: 2
+  alert:
+    bark:
+      enabled: false
+      serverUrl: https://api.day.app
+      deviceKey: ""
+    serverChan:
+      enabled: false
+      sendKey: ""
+log:
+  level: info
+YAML
+    sed -i.bak \
+        -e "s|__RO_PORT__|${port}|" \
+        -e "s|__RO_PASS__|${pass_esc}|" \
+        -e "s|__RO_DOWNLOAD_DIR__|${ddir_esc}|" \
+        "$CONFIG_FILE"
+    rm -f "$CONFIG_FILE.bak"
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+    log_info "已生成初始配置 ${CONFIG_FILE}（端口=${port} 下载目录=${ddir}）"
+}
+
+ensure_data_dirs() {
+    # 幂等：数据目录落在 ${TRIM_PKGVAR}（飞牛托管，升级/重启不丢）
+    local base="${TRIM_PKGVAR:?}"
+    mkdir -p "$base/data/downloads" "$base/data/sources" "$base/data/db"
+    # 下载目录若指向 data-share 共享目录，也确保其存在
+    local ddir
+    ddir=$(awk '/^download:/{f=1;next} f && /^  dir:/{sub(/^  dir:[ \t]*/,""); print; exit} /^[^ ]/{f=0}' "$CONFIG_FILE" 2>/dev/null | tr -d '"' | tr -d "'")
+    if [ -n "$ddir" ]; then
+        mkdir -p "$ddir" 2>/dev/null || true
+    fi
+}
+
+compose_up() {
+    compose_file_ok || log_error "找不到 compose 文件：$COMPOSE_FILE"
+    dc -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
+}
+
+compose_down() {
+    compose_file_ok || return 0
+    dc -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" down || true
+}
