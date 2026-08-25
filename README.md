@@ -1,624 +1,203 @@
-# Rainbow — 无头音乐下载服务
+# Rainbow — 飞牛 NAS 音乐搜索 / 下载 / 元数据管理
 
-> Headless music download service，基于 [lx-music](https://github.com/lyswhut/lx-music-desktop) 音源生态。
-> 纯个人自用 / 局域网部署定位：搜索、下载（含歌词+封面嵌入）、歌单、跨平台换源兜底、健康冒烟测试，全部通过一个轻量 Web 后台 + REST API 操作。
+> Rainbow Music（彩虹音乐）是面向 **飞牛 NAS（FnOS）** 的无头音乐下载工具：搜索、下载（含歌词 + 封面嵌入）、歌单管理、跨平台换源兜底、健康冒烟监控，全部通过一个轻量 Web 后台操作。
+> 基于开源项目 [ro](https://github.com/leizi914599611-boop/ro)（Apache-2.0）二次开发，最终以 **.fpk 安装包** 形态交付。
 
 ---
 
 ## 目录
 
 - [特性](#特性)
-- [完整 API 文档](./API.md)
-- [架构与技术选型](#架构与技术选型)
-- [部署方式](#部署方式)
-  - [方式一：Docker 镜像（最简单，推荐）](#方式一docker-镜像最简单推荐)
-  - [方式二：Docker Compose 从源码构建](#方式二docker-compose-从源码构建)
-  - [方式三：本地部署（Node.js）](#方式三本地部署nodejs)
-- [配置说明（config.yaml）](#配置说明configyaml)
-- [音源管理](#音源管理)
-- [跨平台换源机制](#跨平台换源机制)
-- [REST API 文档](#rest-api-文档)
-- [SSE 实时事件](#sse-实时事件)
-- [鉴权与 API Key](#鉴权与-api-key)
-- [健康冒烟测试](#健康冒烟测试)
-- [内存占用](#内存占用)
-- [Docker 镜像说明](#docker-镜像说明)
-- [外部控制：局域网 vs 公网](#外部控制局域网-vs-公网)
-- [常见问题 / 排错](#常见问题--排错)
+- [界面预览](#界面预览)
+- [安装](#安装)
+  - [方式一：.fpk 安装包（推荐）](#方式一fpk-安装包推荐)
+  - [方式二：Docker 手动部署（ARM 用户兜底）](#方式二docker-手动部署arm-用户兜底)
+- [首次使用（三步上手）](#首次使用三步上手)
+- [免责声明与合规](#免责声明与合规)
+- [排错 / 常见问题](#排错--常见问题)
+- [开发者](#开发者)
+- [NOTICE：上游致谢、许可证与修改说明](#notice上游致谢许可证与修改说明)
 
 ---
 
 ## 特性
 
 - **5 平台**：kw(酷我) / kg(酷狗) / tx(QQ音乐) / wy(网易云) / mg(咪咕)
-- **四维度搜索**：歌曲名 / 歌手 / 专辑 / 歌单；支持单平台与聚合(全平台)
+- **热门歌单**：发现页聚合 5 平台 7 榜（热歌/飙升/TOP500 + 酷我/咪咕精选），24h 本地缓存 + 服务端 5min 缓存，点卡进详情可过滤、整榜下载
+- **四维度搜索**：歌曲名 / 歌手 / 专辑 / 歌单；支持单平台与聚合(全平台)搜索
 - **下载全链路**：流式下载 + 元数据/歌词/封面嵌入（FLAC / MP3），SQLite 记录任务
-- **跨平台换源兜底**：主平台音质降级链全失败 → `findMusic` 跨平台匹配同款 → 逐候选平台重试
-- **歌单**：本地歌单管理 + 整单批量下载
-- **音源管理**：本地文件上传 + 在线 URL 导入 + 热重载
+- **跨平台换源兜底**：主平台音质降级链全失败 → 自动跨平台匹配同款 → 逐候选平台重试
+- **歌单**：本地歌单管理 + 整单批量下载（≤200 首/批）
+- **音源管理**：lx-music 格式音源脚本，本地上传 / URL 导入 / 热重载
 - **实时进度**：SSE 推送任务状态
 - **健康冒烟测试**：定时跑真实下载链路，平台×音源矩阵 + Bark/Server酱 告警
-- **轻量鉴权**：Web 登录（内存 session）+ API Key 双通道
-- **低内存**：SQLite + p-queue 取代 Redis/BullMQ，实测 RSS ≈ 198MB
+- **飞牛原生形态**：`.fpk` 一键安装进 FnOS 应用中心，下载目录可直接指向飞牛共享文件夹
+- **轻量鉴权**：Web 登录 + API Key 双通道；低内存（SQLite + p-queue，实测 RSS ≈ 198MB）
 
 ---
 
-## 架构与技术选型
+## 界面预览
 
-```
-rainbow/
-├── server/                # Fastify + TypeScript 后端
-│   └── src/
-│       ├── index.ts        # 入口：装配鉴权守卫、限流、路由、静态资源
-│       ├── core/
-│       │   ├── source-engine/   # 音源引擎（双层沙箱、热重载、音质降级链）
-│       │   ├── adapters/        # 5 平台适配器（musicSearch/songList/lyric/pic）
-│       │   ├── search/          # 搜索服务（单平台 + aggregate）
-│       │   ├── download/        # 下载队列（p-queue）
-│       │   ├── orchestrator/    # 取 URL 两段式编排 + 换源兜底
-│       │   ├── db/              # better-sqlite3（任务/歌单/冒烟）
-│       │   ├── notify/          # Bark + Server酱 告警
-│       │   ├── smoke/           # 冒烟测试 + scheduler
-│       │   ├── auth/            # session + API Key 校验
-│       │   ├── rate-limit.ts    # 内存固定窗口限流
-│       │   ├── config.ts        # config.yaml 加载 + 运行时 patch
-│       │   └── events.ts        # 事件总线（供 SSE）
-│       └── routes/         # REST 路由
-├── web/                   # 原生 HTML/CSS/JS 后台（6 页）
-├── data/                  # 运行数据（volume 映射宿主机）
-│   ├── downloads/          # 下载的音乐文件
-│   ├── sources/            # lx-music 音源脚本(.js)
-│   └── db/                 # SQLite（ro.db + -wal/-shm）
-├── config.yaml            # 配置（volume 映射，改完重启容器生效）
-├── Dockerfile             # 多阶段构建
-└── compose.yaml           # Docker Compose 编排
-```
+深色毛玻璃风格后台（🌈 Rainbow Music 彩虹音乐）：发现页聚合七榜热门歌单，搜索跨平台聚合，本地收藏点击即播，底部播放栏支持拖动进度与切歌。
 
-**关键技术决策：**
+![主界面 — 发现页热门歌单](docs/screenshots/home-hotplaylists.png)
 
-| 决策 | 说明 |
-|---|---|
-| **沙箱选 `node:vm` + worker_threads** | 替代方案 `isolated-vm` 需要本地 C++ 编译（node-gyp），部署环境**无 g++**，故用 node 内置 vm 双层隔离；隔离水位对个人自用等价。 |
-| **SQLite + p-queue** 取代 Redis/BullMQ | 单进程自用不需要外部依赖，内存目标 <300MB。 |
-| **session 存内存** | 重启即失效（重新登录即可），局域网自用足够，避免持久化 token 的复杂度。 |
-| **鉴权守卫装根 app** | `registerAuthGuard(app)` 必须在根实例上 `addHook('onRequest')`；若通过 `app.register()` 注册会被 Fastify 封装、只作用于插件内路由。 |
-| **原生模块容器内编译** | `better-sqlite3` / `sharp` 在 `node:22-bookworm`(builder 阶段，含工具链)内编译，运行阶段用 `node:22-bookworm-slim`；宿主机无需 g++。 |
+![歌单详情 — 排名榜单与整榜下载](docs/screenshots/playlist-detail.png)
+
+![本地收藏与播放中](docs/screenshots/library-playing.png)
 
 ---
 
-## 部署方式
+## 安装
 
-提供三种部署方式，按从简到繁排列。**推荐方式一**（直接拉预构建镜像，无需本地编译）。
+### 方式一：.fpk 安装包（推荐）
 
-所有方式启动后都访问 `http://<服务器IP>:23330/`，用 `config.yaml` 里的用户名/密码登录。
+从 [Releases](../../releases) 页面下载最新的 `rainbow-<版本>.fpk`，两种安装途径：
 
-> **通用前置**：至少准备一个 lx-music 音源脚本（`.js`），放进 `data/sources/`（或启动后在 Web 音源页导入）。
+**A. 应用中心图形化安装**
 
----
+1. 打开 FnOS **应用中心** → 右上角 **本地安装 / 导入**；
+2. 选择下载好的 `.fpk` 文件，按向导完成安装；
+3. 安装完成后在应用列表启动 Rainbow，浏览器访问 `http://<NAS_IP>:23330/`。
 
-### 方式一：Docker 镜像（最简单，推荐）
-
-直接从 Docker Hub 拉取预构建的多架构镜像（`linux/amd64` + `linux/arm64`），无需本地构建工具链。
-
-**镜像地址**：[`a914599611/rainbow-music`](https://hub.docker.com/r/a914599611/rainbow-music)
+**B. 命令行安装（SSH 登录 NAS 后）**
 
 ```bash
-# 1. 准备目录与配置
-mkdir -p rainbow/data/downloads rainbow/data/sources rainbow/data/db && cd rainbow
-# 下载配置模板（或手写 config.yaml，见配置说明）
-curl -fsSL https://raw.githubusercontent.com/leizi914599611-boop/ro/main/config.example.yaml -o config.yaml
-# 编辑 config.yaml，至少设一个登录密码（auth.webLogin.password）
-
-# 2. 拉取并运行（Docker 会自动匹配当前 CPU 架构）
-docker run -d --name rainbow \
-  --restart unless-stopped \
-  -p 23330:23330 \
-  -e TZ=Asia/Shanghai \
-  -v "$PWD/config.yaml:/app/config.yaml" \
-  -v "$PWD/data/downloads:/app/data/downloads" \
-  -v "$PWD/data/sources:/app/data/sources" \
-  -v "$PWD/data/db:/app/data/db" \
-  --memory 512m \
-  a914599611/rainbow-music:latest
-
-# 3. 查看状态
-docker ps                   # STATUS 应为 Up (healthy)
-docker logs -f rainbow           # 看启动日志
+appcenter-cli install-fpk rainbow-0.2.0-r1.fpk
 ```
 
-**或用 Compose 拉镜像**（把 compose.yaml 里 `build:` 段换成 `image:`）：
+> `.fpk` 内部以 Docker 容器运行 Rainbow，镜像 tag 与包版本严格绑定（如 `v0.2.0-r1`），不使用 `latest`，升级行为完全可预期。
+
+### 方式二：Docker 手动部署（ARM 用户兜底）
+
+若 `.fpk` 在你的环境暂不可用（如部分 ARM 机型应用中心限制），可直接用 Docker Compose 部署同一镜像：
 
 ```yaml
+# compose.yaml
 services:
   rainbow:
-    image: a914599611/rainbow-music:latest   # 不再本地构建，直接拉镜像
+    image: ghcr.io/<OWNER>/rainbow-music:v0.2.0-r1   # ⚠️ 与要安装的版本一致，禁止 latest
     container_name: rainbow
     restart: unless-stopped
     ports:
       - "23330:23330"
     environment:
       TZ: Asia/Shanghai
+      RO_SERVER_HOST: 0.0.0.0
+      RO_SERVER_PORT: "23330"
     volumes:
-      - ./config.yaml:/app/config.yaml
-      - ./data/downloads:/app/data/downloads
-      - ./data/sources:/app/data/sources
-      - ./data/db:/app/data/db
+      - ./config.yaml:/app/config.yaml          # 配置（首次启动无此文件会自动生成）
+      - ./data/downloads:/app/data/downloads    # 下载目录，可改为飞牛共享文件夹路径
+      - ./data/sources:/app/data/sources        # 音源脚本目录
+      - ./data/db:/app/data/db                  # SQLite（任务/歌单，持久化）
     mem_limit: 512m
 ```
 
 ```bash
+mkdir -p data/downloads data/sources data/db
 docker compose up -d
+docker logs -f rainbow          # 首次启动会打印随机生成的登录密码（仅此一次）
 ```
 
-**升级到新版本**：
-```bash
-docker pull a914599611/rainbow-music:latest
-docker compose up -d          # 或 docker rm -f rainbow 后重跑 docker run
-```
+多架构镜像（`linux/amd64` + `linux/arm64`）会自动匹配当前 CPU 架构。
 
 ---
 
-### 方式二：Docker Compose 从源码构建
+## 首次使用（三步上手）
 
-想自己改代码、或不信任预构建镜像时，用仓库自带的 Dockerfile 本地构建（多阶段构建，原生模块在容器内编译，宿主机无需 g++）。
+1. **设置登录密码**
+   - `.fpk` 安装：首次打开 Web 界面进入**安装向导**，按提示设置管理员密码；
+   - Docker 手动部署：若未提供 `config.yaml`，首启自动生成配置并**随机生成强密码**，在 `docker logs rainbow` 中打印一次，请立即保存（遗失可直接改 `config.yaml` 的 `auth.webLogin.password` 后重启）。
+2. **导入音源**
+   Rainbow **不内置、不随包分发任何音源**。你需要自行获取 lx-music 格式的音源脚本（`.js`），然后在「音源管理」页上传文件或粘贴 URL 导入（详见 [用户手册](./docs/USER-GUIDE.md#音源导入)）。**音源的获取与使用合规责任由用户自行承担。**
+3. **搜索并下载**
+   搜索页选择平台（或聚合搜索）→ 选音质（`flac24bit > flac > 320k > 128k`）→ 下载；任务页实时查看进度，完成后文件带歌词与封面标签。
 
-```bash
-# 1. 克隆仓库
-git clone https://github.com/leizi914599611-boop/ro.git && cd ro
-
-# 2. 准备配置
-cp config.example.yaml config.yaml
-# 编辑 config.yaml，至少设一个登录密码
-
-# 3. 构建并启动
-docker compose build
-docker compose up -d
-
-# 4. 查看状态
-docker compose ps           # 应为 Up (healthy)
-docker logs -f rainbow
-```
-
-**改代码后重建**：
-```bash
-docker compose build && docker compose up -d
-```
+完整功能说明见 **[docs/USER-GUIDE.md](./docs/USER-GUIDE.md)**；API 参考见 **[API.md](./API.md)**。
 
 ---
 
-### 方式三：本地部署（Node.js）
+## 免责声明与合规
 
-不想用 Docker、直接在宿主机跑。**注意**：`better-sqlite3` / `sharp` 是原生模块，`npm install` 时会本地编译，需要构建工具链（Debian/Ubuntu：`apt install -y build-essential python3`）。
+> ⚠️ **使用前请务必阅读。**
 
-```bash
-# 前置：Node.js >= 20（推荐 22）
-
-# 1. 克隆并进入 server
-git clone https://github.com/leizi914599611-boop/ro.git && cd ro
-cp config.example.yaml config.yaml
-# 编辑 config.yaml，至少设一个登录密码
-
-cd server
-
-# 2. 装依赖（会本地编译原生模块；国内可用镜像加速）
-npm config set registry https://registry.npmmirror.com
-npm install
-
-# 3. 编译 TypeScript
-npm run build
-
-# 4. 启动（在项目根目录读 config.yaml）
-npm start                   # = node dist/index.js
-```
-
-**开发模式**（热重载，不用先 build）：
-```bash
-cd server && npm run dev     # tsx watch src/index.ts
-```
-
-数据默认落在项目根的 `data/` 下。可用环境变量 `RO_SERVER_PORT` / `RO_CONFIG` / `RO_DB_DIR` 覆盖路径（见下）。
-
-> **端口**：默认 `23330`。
-> **数据持久化**：`config.yaml` 和 `data/{downloads,sources,db}`；Docker 方式已 volume 映射到宿主机，容器重建不丢历史。
+- Rainbow 是一个**工具**，本身不提供、不内置、不预装任何音乐内容或音源脚本；
+- 音源脚本由用户**自行从第三方获取并导入**，本项目与音源的来源、内容、合法性无关；
+- 本工具仅供**个人学习、研究与备份自己合法拥有的音乐**使用。将下载内容用于传播、售卖或侵犯任何第三方版权的行为均与本工具无关，由此产生的一切法律责任由使用者自行承担；
+- 请勿将服务暴露到公网；局域网自用请遵守所在地区的法律法规与相关平台的服务条款。
 
 ---
 
-## 配置说明（config.yaml）
+## 排错 / 常见问题
 
-```yaml
-server:
-  host: 0.0.0.0          # 容器内监听地址；对外暴露由 compose 端口映射控制
-  port: 23330
+**Q: 反向代理后 SSE 实时进度收不到事件？**
+A: 反代必须关闭响应缓冲。Nginx 示例：
 
-auth:
-  enabled: true          # 关掉(false)则全放行——仅在完全可信的内网这么做
-  apiKey: ""             # 建议留空，用 Web「生成 API Key」功能生成（见下）
-  webLogin:
-    username: admin
-    password: ""         # 【必设】空密码禁止登录，首次务必设置
-
-download:
-  dir: data/downloads    # 相对项目根解析
-  concurrency: 3         # 并发下载数(1-10)，改后即时生效
-  defaultQuality: flac   # flac24bit | flac | 320k | 128k
-  nameTemplate: "{name} - {singer}"
-  embedCover: true       # 嵌入封面
-  embedLyric: true       # 嵌入歌词
-  coverSize: 500         # 封面尺寸(100-1000)
-
-sources:
-  dir: data/sources
-  hotReload: true        # 音源目录热重载
-
-rateLimit:
-  enabled: true
-  windowMs: 60000        # 限流窗口
-  max: 300               # 窗口内最大请求数，仅 /api/* 生效
-
-smokeTest:
-  enabled: true
-  cron: 0 6 * * *        # 每天 06:00
-  keyword: 周杰伦
-  checkLyric: true
-  checkPic: true
-  alertThreshold: 2      # 连续失败达阈值才告警
-  alert:
-    bark:
-      enabled: false
-      serverUrl: https://api.day.app
-      deviceKey: ""
-    serverChan:
-      enabled: false
-      sendKey: ""
-
-log:
-  level: info
-```
-
-### 环境变量覆盖
-
-以下环境变量优先于 `config.yaml`（compose 里已设了前两个）：
-
-| 变量 | 作用 |
-|---|---|
-| `RO_SERVER_PORT` | 覆盖监听端口 |
-| `RO_SERVER_HOST` | 覆盖监听地址 |
-| `RO_AUTH_APIKEY` | 覆盖 API Key |
-| `RO_LOG_LEVEL` | 覆盖日志级别 |
-| `RO_CONFIG` | 指定 config.yaml 路径（默认项目根） |
-| `RO_DB_DIR` | SQLite 目录（默认 `data/db`） |
-
-> **安全提示**：密钥类字段（`apiKey` / `webLogin.password` / `deviceKey` / `sendKey`）经 API 读取时**只回传是否已设置的布尔值，绝不回明文**；PATCH 时传空串表示「不修改」。
-
----
-
-## 音源管理
-
-Rainbow 不内置音源，需导入 lx-music 格式的音源脚本(`.js`)。三种方式：
-
-1. **Web 后台 → 音源管理页**：本地文件上传，或在线 URL 导入
-2. **直接放文件**：把 `.js` 丢进 `data/sources/`，开启 `hotReload` 会自动加载
-3. **API**：见下方音源接口
-
-导入后可在音源页查看每个音源支持的平台与音质、启停、热重载、删除。
-
----
-
-## 跨平台换源机制
-
-对齐 lx-music 原版的两段式逻辑，是**取 URL 失败时的核心兜底**，不是可选优化：
-
-1. **主平台音质降级链**：按 `flac24bit → flac → 320k → 128k` 在主平台+指定音源逐级尝试
-2. **全失败 → 跨平台换源**：`findMusic({name, singer, albumName?, interval?, source})` 在其它平台匹配同一首歌，逐候选平台各试一次（对齐原版 `retryedSource`，每平台只试一次防止无限重试）
-
-**换源后的元数据处理：**
-- 歌词 / 封面：走**实际命中平台**
-- 文件标题 / 歌手 / 专辑：仍用**原曲信息**
-- 任务状态标记为 `completed_with_warnings`，`actual_source` 记为 `real-source@kw` 形式
-
----
-
-## REST API 文档
-
-所有接口前缀 `/api/v1`。鉴权见 [鉴权与 API Key](#鉴权与-api-key)。返回均为 JSON（SSE 除外）。
-
-### 鉴权 Auth
-
-| 方法 | 路径 | 说明 | Body / 参数 |
-|---|---|---|---|
-| POST | `/auth/login` | 登录，成功设 `ro_sess` Cookie | `{ username, password }` |
-| POST | `/auth/logout` | 登出，清 Cookie | — |
-| GET | `/auth/status` | 鉴权状态 | 返回 `{ enabled, authenticated, passwordConfigured }` |
-
-### 状态 Status
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/status` | 应用状态：版本、uptime、node 版本、内存(MB)、音源数、任务分布 |
-
-### 搜索 Search
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/search?keyword=晴天&platform=kw&page=1&limit=20` | 单平台歌曲搜索 |
-| GET | `/search/aggregate?keyword=晴天&platforms=kw,wy&page=1` | 聚合搜索（`platforms` 省略=全平台）|
-| GET | `/search/songlist?keyword=周杰伦&platform=kw&page=1` | 单平台歌单搜索 |
-| GET | `/search/songlist/aggregate?keyword=周杰伦&page=1` | 聚合歌单搜索 |
-| GET | `/search/songlist/detail?platform=kw&id=<歌单ID>&page=1` | 歌单详情（含歌曲列表）|
-
-### 下载 / 任务 Download
-
-| 方法 | 路径 | 说明 | Body |
-|---|---|---|---|
-| POST | `/download` | 提交单曲下载 | `{ platform, musicInfo, quality?, primarySourceId?, sourceIds? }` |
-| POST | `/download/batch` | 批量下载（≤200 首）| `{ items:[{platform,musicInfo,quality?}], quality?, primarySourceId?, sourceIds? }` |
-| GET | `/tasks?status=` | 任务列表（可按状态过滤）| — |
-| GET | `/tasks/:id` | 单任务详情 | — |
-| POST | `/tasks/:id/retry` | 重试 | — |
-| POST | `/tasks/:id/cancel` | 取消 | — |
-| DELETE | `/tasks/:id` | 删除记录 | — |
-
-> `musicInfo` 至少需含 `songmid` 与 `name`。任务状态：`pending / active / completed / completed_with_warnings / failed / canceled`。
-
-### 歌单 Playlists
-
-| 方法 | 路径 | 说明 | Body |
-|---|---|---|---|
-| GET | `/playlists` | 歌单列表（含歌曲数）| — |
-| POST | `/playlists` | 创建 | `{ name, description? }` |
-| GET | `/playlists/:id` | 详情（含歌曲）| — |
-| PATCH | `/playlists/:id` | 改名/改描述 | `{ name?, description? }` |
-| DELETE | `/playlists/:id` | 删除 | — |
-| POST | `/playlists/:id/items` | 添加歌曲 | `{ platform, musicInfo }` |
-| DELETE | `/playlists/:id/items/:itemId` | 移除歌曲 | — |
-| POST | `/playlists/:id/download` | 整单批量下载 | `{ quality? }` |
-
-### 音源 Sources
-
-| 方法 | 路径 | 说明 | Body |
-|---|---|---|---|
-| GET | `/sources` | 列表（状态/平台/音质）| — |
-| POST | `/sources/import/content` | 粘贴脚本内容导入 | `{ name, content }` |
-| POST | `/sources/import/url` | 在线 URL 导入 | `{ url, name? }` |
-| POST | `/sources/upload` | multipart 文件上传（≤5MB）| form-data 文件字段 |
-| PATCH | `/sources/:id/enabled` | 启停 | `{ enabled }` |
-| POST | `/sources/:id/reload` | 热重载单个音源 | — |
-| DELETE | `/sources/:id` | 删除 | — |
-
-### 设置 Settings
-
-| 方法 | 路径 | 说明 | Body |
-|---|---|---|---|
-| GET | `/settings` | 脱敏配置视图（不含密钥明文）| — |
-| PATCH | `/settings` | 局部更新（下载/告警/冒烟）| 见下 |
-| POST | `/settings/apikey/generate` | 生成新 API Key（**仅此次返回明文**）| — |
-| DELETE | `/settings/apikey` | 撤销当前 API Key | — |
-| POST | `/settings/notify/test` | 测试告警推送 | `{ title?, body? }` |
-
-PATCH `/settings` body 示例：
-```json
-{
-  "download": { "concurrency": 3, "defaultQuality": "flac", "coverSize": 500 },
-  "smokeTest": { "enabled": true, "cron": "0 6 * * *", "keyword": "周杰伦" }
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:23330;
+  proxy_http_version 1.1;
+  proxy_set_header Connection '';
+  proxy_buffering off;              # SSE 必需
+  proxy_read_timeout 3600s;
 }
 ```
 
-### 健康 Health
+**Q: 容器起不来 / 镜像拉取失败？**
+A: 先 `docker logs rainbow`（或 FnOS 应用详情页的日志面板）看具体报错；拉取失败常见原因是网络不通或 tag 写错——镜像 tag 必须与 `.fpk` 版本一致（如 `v0.2.0-r1`），不存在 `latest` 标签。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/health/smoke` | 最近一次冒烟结果 + 平台×音源矩阵 |
-| GET | `/health/smoke/trend?days=7` | 最近 N 天趋势 |
-| POST | `/health/smoke/run` | 手动触发一次冒烟（异步，返回 202）|
-
----
-
-## SSE 实时事件
-
-```
-GET /api/v1/sse/subscribe
-```
-
-`Content-Type: text/event-stream`，服务端每 15s 发注释行心跳。事件格式 `event: <name>\ndata: <json>\n\n`。
-
-**事件类型**：`connected`、`task:created`、`task:active`、`task:progress`、`task:completed`、`task:completed_with_warnings`、`task:failed`、`task:canceled`、`source:changed`、`source:update-alert`、`smoke:completed`、`smoke:failed`。
-
-> 断线重连后应调用 `GET /api/v1/tasks` 做一次全量对账。
-
-浏览器示例：
-```js
-const es = new EventSource('/api/v1/sse/subscribe')
-es.addEventListener('task:progress', (e) => console.log(JSON.parse(e.data)))
-```
-
----
-
-## 鉴权与 API Key
-
-两种通行方式（`auth.enabled=false` 时全放行）：
-
-### 1. Web 登录
-用户名 + 密码 → 签发内存 session token → 写 `HttpOnly` Cookie（`ro_sess`，7 天）。重启服务 session 失效，重新登录即可。
-
-> **空密码禁止登录**：首次部署务必在 `config.yaml` 设 `auth.webLogin.password`。
-
-### 2. API Key（给脚本 / 自动化）
-请求头二选一：
-```
-x-api-key: ro_xxxxxxxx...
-# 或
-Authorization: Bearer ro_xxxxxxxx...
-```
-
-**生成方式（推荐用 Web 后台）**：设置页 → 「API Key」卡片 → 生成。
-- Key 格式 `ro_` + 32 字节 base64url
-- **明文仅在生成的那一次显示**，请立即复制保存；之后任何读取只能看到「已设置」，无法再查看明文，只能重新生成
-- 「重新生成」会使旧 Key 立即失效；「撤销」清空 Key
-
-curl 示例：
-```bash
-# 登录拿 cookie
-curl -c cookies.txt -X POST http://<IP>:23330/api/v1/auth/login \
-  -H 'Content-Type: application/json' -d '{"username":"admin","password":"<你的密码>"}'
-
-# 生成 API Key（明文只这一次）
-curl -b cookies.txt -X POST http://<IP>:23330/api/v1/settings/apikey/generate
-
-# 之后用 API Key 调接口（无需 cookie）
-curl -H 'x-api-key: ro_xxxx' 'http://<IP>:23330/api/v1/search?keyword=晴天&platform=kw'
-```
-
----
-
-## 健康冒烟测试
-
-定时（默认每天 06:00）跑真实下载链路，对每个音源 × 每个平台跑一次搜索+取 URL（可选校验歌词/封面），生成 🟢/🟡/🔴 矩阵。连续失败达 `alertThreshold` 时通过 Bark / Server酱 告警。
-
-- 平台间**串行 + 间隔 ≥3s**，防触发风控
-- 手动触发：健康页「立即冒烟测试」或 `POST /api/v1/health/smoke/run`
-- 配了哪个告警渠道就用哪个，都配则同时推送
-
----
-
-## 内存占用
-
-实测稳定 **RSS ≈ 198MB**（目标 <300MB 达标）。compose 里设了 `mem_limit: 512m` 留足余量。低占用得益于用 SQLite + p-queue 替代 Redis/BullMQ。
-
----
-
-## Docker 镜像说明
-
-**镜像仓库**：[`a914599611/rainbow-music`](https://hub.docker.com/r/a914599611/rainbow-music)（Docker Hub）
-
-### 标签（Tags）
-
-| 标签 | 说明 |
-|---|---|
-| `latest` | 最新稳定版，跟随 `main` 分支 |
-| `0.1.0` | 固定版本号（语义化版本），生产环境建议锁定具体版本 |
-
-### 支持架构
-
-多架构镜像（manifest list），`docker pull` / `docker run` 会**自动匹配当前 CPU 架构**：
-
-- `linux/amd64`（x86_64 服务器 / PC）
-- `linux/arm64`（Apple Silicon、树莓派 4/5、ARM 云主机等）
-
-### 镜像内部结构
-
-多阶段构建产出精简运行镜像：
-
-- **基础镜像**：`node:22-bookworm-slim`（运行阶段）
-- **工作目录**：`/app/server`，入口 `node dist/index.js`
-- **暴露端口**：`23330`
-- **内置健康检查**：每 30s 探测 `/api/v1/status`（鉴权开启返回 401 也算存活，仅连接失败判宕机）
-- **预置环境变量**：`NODE_ENV=production`、`TZ=Asia/Shanghai`、`RO_SERVER_HOST=0.0.0.0`、`RO_SERVER_PORT=23330`、`RO_DB_DIR=/app/data/db`
-
-### 需要挂载的卷（volume）
-
-镜像**不含**任何配置和数据（干净镜像），运行时通过 volume 注入：
-
-| 容器内路径 | 用途 | 是否必需 |
-|---|---|---|
-| `/app/config.yaml` | 配置文件（用户名/密码/apiKey/各项设置）| **必需** |
-| `/app/data/downloads` | 下载的音乐文件 | 建议 |
-| `/app/data/sources` | lx-music 音源脚本(.js) | **必需**（否则无音源）|
-| `/app/data/db` | SQLite（任务记录/歌单）| 建议（否则重建容器丢历史）|
-
-> **镜像不含密钥**：镜像里没有任何 `config.yaml` 或 `data/`（`.dockerignore` 已排除），密码/apiKey 完全由你挂载的 `config.yaml` 提供，公开镜像不泄露任何凭据。
-
-### 自己构建并推送多架构镜像
-
-```bash
-# 一次性准备（注册 QEMU 跨架构模拟 + 创建 buildx builder）
-docker run --privileged --rm tonistiigi/binfmt --install arm64
-docker buildx create --name robuilder --driver docker-container --use
-
-# 构建 amd64 + arm64 并推送
-docker login -u <你的用户名>
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t <你的用户名>/rainbow-music:0.1.0 \
-  -t <你的用户名>/rainbow-music:latest \
-  --push .
-```
-
----
-
-## 外部控制：局域网 vs 公网
-
-Rainbow 的原始定位是**纯个人自用 / 局域网部署**。如何暴露取决于你的场景：
-
-### 场景 A：局域网自用（推荐 / 默认）
-
-- `server.host: 0.0.0.0` + compose 端口映射 `23330:23330`
-- 局域网内任意设备访问 `http://<服务器内网IP>:23330/`
-- 鉴权：设好 Web 登录密码即可；API Key 按需生成
-- **不要**把 23330 端口转发/映射到公网
-
-### 场景 B：公网访问（需自行加固，超出自用定位）
-
-> ⚠️ **风险提示**：公网暴露音乐下载服务涉及版权与安全风险，且本项目为轻量自用设计（session 存内存、无 CSRF token、无审计日志）。以下为**最低加固清单**，是否上公网及合规风险请自行评估。
-
-最低加固要求：
-
-1. **改掉默认弱密码**：`admin/admin` 绝不可用于公网；设强密码
-2. **启用 API Key** 并妥善保管
-3. **反向代理 + HTTPS**：用 Nginx/Caddy 套 TLS，不要裸 HTTP 暴露
-   ```nginx
-   # Nginx 示例（注意 SSE 需要关闭缓冲）
-   location / {
-     proxy_pass http://127.0.0.1:23330;
-     proxy_http_version 1.1;
-     proxy_set_header Connection '';
-     proxy_buffering off;              # SSE 必需
-     proxy_read_timeout 3600s;
-   }
-   ```
-4. **防火墙**：只放行反代端口(443)，`23330` 仅监听 `127.0.0.1`（把 compose 端口映射改为 `127.0.0.1:23330:23330`，让 Nginx 走本机回环）
-5. **收紧限流**：降低 `rateLimit.max`
-6. 考虑加 fail2ban / 基础访问日志监控
-
----
-
-## 常见问题 / 排错
-
-**Q: `docker compose build` 报 `npm error disturl is not a valid npm option`？**
-A: node22 自带的 npm10+ 已移除 `disturl` 配置项。Dockerfile 已改用环境变量 `ENV npm_config_disturl=...` 注入给 node-gyp，重新拉取最新 Dockerfile 即可。
+**Q: 升级会不会丢数据？**
+A: 不会。音乐文件、音源脚本、SQLite 任务/歌单记录全部在宿主机挂载卷（`data/downloads`、`data/sources`、`data/db`）与 `config.yaml` 中，镜像本身不含任何数据。升级 = 换新版 `.fpk`（或 compose 中改 image tag 后 `docker compose up -d`），数据原样保留。
 
 **Q: 登录一直失败 / 提示未设置密码？**
-A: `config.yaml` 的 `auth.webLogin.password` 为空。空密码禁止登录，设好密码后 `docker compose restart`。
+A: `config.yaml` 的 `auth.webLogin.password` 为空。空密码禁止登录，设好密码后重启容器。
 
 **Q: 搜到的歌下载失败？**
-A: 单个平台/音源可能临时不可用。Rainbow 会自动走跨平台换源兜底；若所有平台都失败，检查音源脚本是否有效（音源页看状态）。
-
-**Q: 换源后文件标了 `completed_with_warnings`？**
-A: 正常。表示主平台取 URL 失败、通过其它平台命中了同款；文件曲目信息用原曲，歌词/封面用实际命中平台。
-
-**Q: SSE 在反代后收不到事件？**
-A: 反代需关闭响应缓冲（Nginx `proxy_buffering off;`），否则事件会被缓冲住。
+A: 单平台/音源可能临时不可用，Rainbow 会自动跨平台换源兜底；若全平台失败，到「音源管理」页检查音源状态是否 `ready`，或「健康看板」查看冒烟矩阵定位问题平台。
 
 **Q: 音源导入了但不生效？**
-A: 确认 `sources.hotReload: true`，或在音源页手动「热重载」；查看音源状态是否 `ready`。
+A: 确认 `sources.hotReload: true`，或在音源页手动「热重载」；脚本语法错误会导致加载失败，看容器日志。
+
+更多问题见 [用户手册 FAQ](./docs/USER-GUIDE.md#常见问题)。
 
 ---
 
-## NOTICE（上游声明与修改点）
+## 开发者
 
-本项目 **Rainbow** 是基于 [leizi914599611-boop/ro](https://github.com/leizi914599611-boop/ro)（Apache-2.0 许可证）的二次开发，面向飞牛 NAS 场景的音乐下载工具。在此感谢上游项目的开源贡献。
+开发环境要求 **Node.js ≥ 20**（推荐 22）+ Docker。
 
-相对上游的修改点（持续更新）：
+```bash
+# 本地开发（热重载）
+cd server
+npm install
+cp ../config.example.yaml ../config.yaml   # 在项目根准备配置，按需修改
+npm run dev                                # tsx watch，默认 http://localhost:23330
 
-- **品牌化**：对外名称 `Ro` / `Ro 音乐` / `ro-music` → `Rainbow` / `Rainbow 音乐下载` / `rainbow-music`
-  - `server/package.json`：包名 `ro-server` → `rainbow-server`，description 同步更新
-  - `compose.yaml`：服务名/容器名 `ro` → `rainbow`，镜像名 `ro-music:latest` → `rainbow-music:latest`
-  - `web/index.html` / `web/login.html`：页面标题与文案
-  - 启动日志、告警与测试通知的默认文案
-- **未改动**：业务逻辑、路由路径（`/api/v1/*`）、API 契约、配置项与环境变量（`RO_*`）、Cookie/API Key 前缀（`ro_sess` / `ro_`）均保持与上游一致
+# 类型检查 + 构建
+npm run typecheck && npm run build
 
-依 Apache-2.0 要求，本项目的修改不影响原项目的许可证归属；原项目版权归其作者所有。
+# Docker 构建 + 运行
+docker compose build && docker compose up -d
+
+# 打包 .fpk（产物：dist-fpk/rainbow-${FPK_VERSION}.fpk）
+FPK_VERSION=0.2.0-r1 \
+FPK_IMAGE=ghcr.io/<owner>/rainbow-music \
+FPK_IMAGE_TAG=v0.2.0-r1 \
+scripts/build-fpk.sh
+```
+
+架构、模块划分与性能加固配置项详见 **[docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md)**；CI 发布流水线见 [`.github/workflows/build.yml`](./.github/workflows/build.yml)（tag `v*` 触发：typecheck → 多架构镜像推 GHCR → 组装 fpk → GitHub Release）。
+
+---
+
+## NOTICE：上游致谢、许可证与修改说明
+
+本项目 **Rainbow** 是基于 [leizi914599611-boop/ro](https://github.com/leizi914599611-boop/ro)（**Apache-2.0** 许可证）的二次开发，面向飞牛 NAS 场景的音乐下载工具。在此诚挚感谢上游项目及其所有开源贡献者。
+
+上游致谢、版权声明与相对上游的修改点详见仓库根目录的 **[NOTICE](./NOTICE)** 文件；许可证全文见 **[LICENSE](./LICENSE)**。
 
 ---
 
 ## License
 
-Apache-2.0
+Apache-2.0（继承自上游 [ro](https://github.com/leizi914599611-boop/ro)）

@@ -19,6 +19,7 @@ Rainbow 的完整 HTTP API 参考。所有接口以 `/api/v1` 为前缀，返回
 - [5. 设置 Settings](#5-设置-settings)
 - [6. 实时事件 SSE](#6-实时事件-sse)
 - [7. 状态 Status](#7-状态-status)
+- [8. 歌单 Playlists](#8-歌单-playlists)
 - [错误约定](#错误约定)
 - [完整调用示例：搜索→下载→追踪](#完整调用示例搜索下载追踪)
 
@@ -153,6 +154,106 @@ curl -b cookie.txt 'http://127.0.0.1:23330/api/v1/search/aggregate?keyword=月�
 curl -b cookie.txt 'http://127.0.0.1:23330/api/v1/search/songlist/detail?platform=kw&id=123456&page=1'
 ```
 
+### GET /api/v1/hot-playlists
+
+热门歌单聚合（#60 首页数据源；#62 P1 酷狗扩展为 5 榜）：一次性返回 5 平台 10 张热歌榜单（平台交错序）。
+
+**榜单清单**：wy 热歌榜(3778678) / tx 巅峰榜·热歌(26) / kg TOP500(top500) / tx 飙升榜(62) / kg 飙升榜(soar) / kw 酷我精选(虚拟) / kg 新歌榜(new) / mg 咪咕精选(虚拟) / kg 网络热歌榜(webhot) / kg 欧美榜(eur)。
+
+- kg 榜 id 为语义 slug（`kg-top500`/`kg-soar` 等，对应原生 rankid 8888/6666/74534/82831/31310，55 榜全集 `m.kugou.com/rank/list` 实测）；与 wy 热歌/tx 双榜并列
+- kw/mg 榜单接口不可用 → 固定热门关键词搜索拼装虚拟榜（`source: "virtual"`，不冒充官方榜）
+- 单榜失败/超时(8s) → 该平台进 `errors`，其余照常返回（平台级隔离，同平台多榜去重报一条）
+- 服务端内存缓存 5 分钟（并发去重；缓存签名含榜单集——清单变化即失效）；`songs` 每榜上限 50 首
+- `songs[].songInfo` 与 `/api/v1/search` 的 list item **同构**，可原样作为下载接口的 `musicInfo` 传入（榜单歌零转换进下载/刮削链路）
+
+**响应**（结构示例）：
+```json
+{
+  "fetchedAt": 1787294899000,
+  "playlists": [
+    {
+      "id": "wy-3778678",
+      "platform": "wy",
+      "nativeId": "3778678",
+      "title": "热歌榜",
+      "description": "云音乐中每天更新一次的热歌榜…",
+      "coverUrl": "https://p1.music.126.net/….jpg",
+      "updateTime": "2026-08-21",
+      "updatedAt": "2026-08-21",
+      "total": 200,
+      "source": "toplist",
+      "songs": [
+        {
+          "platform": "wy",
+          "songmid": "1973665667",
+          "title": "海屿你",
+          "artist": "马也_Crabbit",
+          "album": "海屿你",
+          "interval": "3:52",
+          "coverUrl": "http://p3.music.126.net/….jpg",
+          "songInfo": { "name": "海屿你", "singer": "马也_Crabbit", "source": "wy", "songmid": "1973665667", "types": […], "_types": {…}, "typeUrl": {} }
+        }
+      ]
+    }
+  ],
+  "errors": [ { "platform": "kg", "error": "kg: upstream timeout" } ]
+}
+```
+
+```bash
+curl -b cookie.txt 'http://127.0.0.1:23330/api/v1/hot-playlists'
+```
+
+### GET /api/v1/playlist-square
+
+歌单广场聚合（#67 首页「精选歌单」分区数据源）：wy/tx 两平台广场轻量列表（**不含曲目**，详情 drill 复用 `/search/songlist/detail`）。平台矩阵实测依据：`docs/research/PLAYLIST-EXPANSION-RESEARCH.md` §1（wy 全绿主接入；tx 列表可用、详情约 75% 需容错；kg plist 已死不接入）。
+
+**Query 参数**：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `platform` | `all` | `all`（wy+tx 按索引交错混合）/ `wy` / `tx` |
+| `cat` | `全部` | 分类：**wy 分类词透传**（如 全部/华语/流行/摇滚/电子）；**tx 仅识别纯数字 sortId**（5=推荐 2=最热 3=最新），其他值固定 sortId=5（tx categoryId 体系与广场页不一致，10000001 实测为空 → 固定全部 10000000） |
+| `page` | `1` | 翻页（供「换一批」）；wy=offset 步进、tx=sin/ein 步进，实测均零重叠 |
+| `offset` | — | 与 `page` 等价的偏移写法（按 20/页换算，脚本直调用） |
+| `limit` | `20` | 每平台拉取数（5–20 clamp；两平台分页步长一致） |
+
+- 单平台失败/超时(8s) → 进 `errors` 不阻塞另一平台（同 hot-playlists 范式）
+- 服务端内存缓存 5 分钟（in-flight 并发去重；键 = `platform|cat|page|limit`）
+- 封面归一：wy `coverImgUrl` 原样；tx `imgurl` 末段小尺寸档升 300（qpic 300 档实测 HEAD 200），空值归 `null` → 前端 hp-fallback 径向渐变兜底
+- **歌单详情零新端点**：卡片点击 → 现有 `GET /api/v1/search/songlist/detail?platform=wy|tx&id=<nativeId>`（`songs[].songInfo` 同构可进下载/收藏链路）；tx 推荐位 dissid 详情空 cdlist 时后端抛错 → 前端 toast「该歌单暂时无法获取详情，可能为平台推荐位限制」
+
+**响应**（结构示例）：
+```json
+{
+  "fetchedAt": 1787294899000,
+  "platform": "all",
+  "cat": "全部",
+  "page": 1,
+  "limit": 20,
+  "playlists": [
+    {
+      "platform": "wy",
+      "nativeId": "17990594711",
+      "title": "纯音乐｜专注 放松 清新 氛围",
+      "coverUrl": "http://p1.music.126.net/….jpg",
+      "playCount": 175852,
+      "trackCount": 60,
+      "creator": "洛米Gemini",
+      "category": "全部"
+    }
+  ],
+  "total": 12303,
+  "hasMore": true,
+  "totals": { "wy": 683, "tx": 11620 },
+  "errors": []
+}
+```
+
+```bash
+curl -b cookie.txt 'http://127.0.0.1:23330/api/v1/playlist-square?platform=all&cat=%E5%8D%8E%E8%AF%AD&page=2'
+```
+
 ---
 
 ## 3. 下载与任务 Download / Tasks
@@ -248,6 +349,131 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/download \
 
 删除任务记录。成功 `{ "id": "...", "deleted": true }`；不存在 `404`。
 
+### POST /api/v1/tasks/:taskId/scrape
+
+对已完成任务触发元数据刮削：从音源平台拉取歌曲详情，补全年份/曲目号/碟号/流派等标签（**read-merge-write，只补缺不覆盖已有标签**）。任务对象相应增加 `scrapeStatus` / `scrapeInfo` 字段。
+
+**Query**：`?force=true` —— 已 `success` 的任务也重新入队重刮（仍只补缺）。
+
+**响应 202**：`{ "id": "<taskId>", "scrapeStatus": "pending" }`
+
+**错误**：`404` 任务不存在；`409` 未完成 / 无文件 / 已刮过（需 `force`）/ 刮削功能未启用。
+
+### POST /api/v1/scrape/all
+
+一键刮削全部待处理任务（已完成、有文件、且未 `success`；`?force=true` 含已 `success`）。异步执行，进度经 SSE `scrape:progress` 推送。
+
+**响应 202**：`{ "queued": <入队数>, "skipped": <跳过数> }`
+
+### GET /api/v1/scrape/status
+
+刮削运行态与状态分布统计。
+
+```json
+{
+  "running": false, "activeTaskId": null, "queueSize": 0,
+  "stats": { "none": 3, "pending": 0, "running": 0, "success": 2, "failed": 0, "skipped": 1 }
+}
+```
+
+> `scrapeStatus` 状态机：`pending → running → success / failed(自动重试≤2) / skipped(确定性不刮)`。`scrapeInfo` 记录来源平台、补全字段、时间与错误信息；开启 `scrape.mbFallback`（默认开）时另含 `mbFallback: attempted|hit|miss` —— MusicBrainz L2 兜底 albumArtist 的尝试/命中/未命中标注（中文曲目命中率有限属预期）。
+
+### POST /api/v1/scrape/reset
+
+重置全部任务的刮削状态：`scrape_status` 置回 `pending`、`scrape_info` 清空。
+
+- 仅清除数据库内部簿记，**不改动已写入音频文件的标签**，也不影响任务本身状态；
+- 重置后这些任务会被「刮削全部待处理」重新纳入（标签只补缺，已写过的字段不会重复写）；
+- 设置页「元数据刮削 → 状态重置」按钮即调此接口（confirm 确认后）。
+
+**响应 200**：`{ "reset": <实际发生变化的行数> }`（本就 pending 且无记录的行不计入）
+
+```bash
+curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/scrape/reset
+# → { "reset": 12 }
+```
+
+### GET /api/v1/play/:taskId
+
+流式播放已完成任务的音频文件（供 `<audio>` 标签直接引用，同源 Cookie 自动携带）。
+
+**前置条件**：任务状态必须为 `completed` 或 `completed_with_warnings`，且 `file_path` 文件实际存在于 `download.dir` 之内。
+
+**Range 支持**：完整支持 HTTP Range（`bytes=start-end` / `bytes=start-` / `bytes=-suffix` 单段），支持拖动进度条/断点续拖：
+
+- 不带 `Range` → `200` 全量响应，带 `Accept-Ranges: bytes`
+- 带合法 `Range` → `206 Partial Content`，带 `Content-Range: bytes <start>-<end>/<total>` 与对应 `Content-Length`
+- `Range` 不可满足 → `416`，带 `Content-Range: bytes */<total>`
+
+**Content-Type** 按文件扩展名：`.mp3` → `audio/mpeg`，`.flac` → `audio/flac`，其余 `audio/*`。
+
+**响应 206（示例头）**：
+```http
+HTTP/1.1 206 Partial Content
+Content-Type: audio/mpeg
+Accept-Ranges: bytes
+Content-Range: bytes 0-1023/8452310
+Content-Length: 1024
+```
+
+**错误码**：
+
+| 状态码 | 含义 |
+|---|---|
+| `401` | 未授权（全局守卫，同其它接口） |
+| `404` | 任务不存在 |
+| `409` | 任务未完成（pending/active/failed/canceled），不可播放 |
+| `410` | 任务文件缺失（file_path 为空/被删除/越出 download.dir） |
+| `416` | Range 不可满足 |
+
+```bash
+curl -b cookie.txt -I http://127.0.0.1:23330/api/v1/play/<taskId>
+curl -b cookie.txt -H 'Range: bytes=0-1023' -o chunk.bin http://127.0.0.1:23330/api/v1/play/<taskId>
+```
+
+### GET /api/v1/cover/:taskId
+
+取任务的歌曲封面（供 `<img>` 标签直接引用，同源 Cookie 自动携带；鉴权与 play 一致）。
+按以下顺序解析，前端 `onerror` 时回退装饰位：
+
+1. **嵌入封面**：任务已完成且为 MP3 → 读取 ID3 `APIC` 帧 → `200 image/jpeg`（或实际 mime），带 `Cache-Control: private, max-age=86400`（FLAC 嵌入封面暂不支持读取）
+2. **音源封面直链**：入队时落库的 `music_info.musicInfo.img`（tx/wy/mg 搜索结果自带 500x500 直链）→ `302` 重定向到该 URL，浏览器直连
+3. 两者皆无 → `404 { "error": "no cover available" }`
+
+**错误码**：
+
+| 状态码 | 含义 |
+|---|---|
+| `401` | 未授权（全局守卫，同其它接口） |
+| `404` | 任务不存在 / 无可用封面 |
+
+```bash
+curl -b cookie.txt -o cover.jpg -w '%{http_code} %{content_type}\n' http://127.0.0.1:23330/api/v1/cover/<taskId>
+```
+
+### GET /api/v1/lyric/:taskId
+
+取任务的歌曲歌词（原始 lrc 文本，含 `[mm:ss.xx]` 时间轴；前端解析后渲染滚动歌词，鉴权与 play/cover 一致）。
+歌词与下载嵌入、冒烟测试共用同一内核（各平台官方接口，不走音源）：
+
+1. 解析任务入队时落库的 `music_info`（`platform` + `musicInfo.songmid` 等）→ 按平台拉取 lrc
+2. 拉取成功且非空 → `200 { "lyric": "[00:00.00]...\n[00:12.50]..." }`，带 `Cache-Control: private, max-age=86400`（歌词对同一任务不可变）
+3. 任务不存在 → `404 { "error": "task not found" }`
+4. 平台不支持 / payload 损坏 / 上游无歌词 → `404 { "error": "no lyric available" }`
+
+服务端内存 LRU 缓存（容量 100，key=taskId，含「无歌词」负缓存）避免重复拉取；重启后缓存重建。
+
+**错误码**：
+
+| 状态码 | 含义 |
+|---|---|
+| `401` | 未授权（全局守卫，同其它接口） |
+| `404` | 任务不存在 / 无可用歌词 |
+
+```bash
+curl -b cookie.txt http://127.0.0.1:23330/api/v1/lyric/<taskId>
+```
+
 ---
 
 ## 4. 音源管理 Sources
@@ -287,13 +513,36 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 
 启停音源。请求体 `{ "enabled": true|false }`。成功 `{ "id": "...", "enabled": true }`；缺字段 `400`；不存在 `404`。
 
+> #56 起 `enabled` 持久化到 SQLite meta 表（key `sourceEnabled`）：热重载 `loadAll()` 与服务重启后自动恢复，不再被重置为 true。
+
 ### POST /api/v1/sources/:id/reload
 
 热重载单个音源。成功返回音源视图；不存在 `404`。
 
+### POST /api/v1/sources/smoke
+
+#56 一键快速冒烟：对每个「就绪且启用」的音源逐平台（kw/kg/tx/wy/mg）执行 `search（固定关键词「周杰伦 晴天」，同平台结果缓存复用）→ musicUrl(128k, 15s 超时) → HEAD/Range 探测（3s 超时；HEAD 被 405/501 拒时回退 Range GET）`，**同步等待全部完成或整体预算耗尽后返回**（最长约 60s）。并发控制：音源串行、同音源内平台并行 ≤3；与定时全量冒烟（`POST /api/v1/health/smoke/run`）互斥。不落库、不告警。
+
+**响应 200**（`matrix` 行 = 启用音源 × 全部五平台，含未声明平台的 `"-"` 格子）:
+```json
+{
+  "keyword": "周杰伦 晴天",
+  "startedAt": 1761234567890, "finishedAt": 1761234573210, "durationMs": 5320,
+  "timeout": false,
+  "total": 25, "passed": 12, "failed": 11,
+  "matrix": [
+    { "source": "pdone-flower", "platform": "wy", "search": "ok", "url": "ok", "latencyMs": 812, "error": null },
+    { "source": "pdone-flower", "platform": "kw", "search": "ok", "url": "fail", "latencyMs": 240, "error": "HTTP 410" },
+    { "source": "pdone-grass", "platform": "kg", "search": "ok", "url": "-", "latencyMs": 0, "error": null }
+  ]
+}
+```
+
+字段口径：`search`/`url` ∈ `ok|fail|-`（`-` = 未测：平台未被该音源声明，或 search 失败未走到取链）；`latencyMs` = musicUrl+探测链路耗时（search fail 的格子记 search 耗时）；`passed` = search 且 url 均 ok 的格子数，`failed` = 任一 fail 的格子数。错误：`409`（已有快速/全量冒烟在跑），`500`（执行异常）。
+
 ### DELETE /api/v1/sources/:id
 
-删除音源。成功 `{ "id": "...", "deleted": true }`；不存在 `404`。
+删除音源（同步清理其持久化启停状态）。成功 `{ "id": "...", "deleted": true }`；不存在 `404`。
 
 ---
 
@@ -309,6 +558,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 {
   "auth": { "apiKeySet": true },
   "download": { "concurrency": 3, "defaultQuality": "flac", "nameTemplate": "{name} - {singer}", "embedCover": true, "embedLyric": true, "coverSize": 500 },
+  "scrape": { "enabled": true, "autoOnComplete": true },
   "smokeTest": { "enabled": true, "cron": "0 6 * * *", "keyword": "周杰伦", "checkLyric": true, "checkPic": true, "alertThreshold": 2,
     "alert": { "bark": { "enabled": false, "serverUrl": "https://api.day.app", "deviceKeySet": false }, "serverChan": { "enabled": false, "sendKeySet": false } } }
 }
@@ -316,7 +566,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 
 ### PATCH /api/v1/settings
 
-局部更新配置（下载 / 冒烟测试 / 告警）。只传要改的字段。
+局部更新配置（下载 / 刮削 / 冒烟测试 / 告警）。只传要改的字段。
 
 **校验规则**：
 - `download.concurrency`：1–10 整数
@@ -371,6 +621,8 @@ Server-Sent Events 事件流。`Content-Type: text/event-stream`，服务端每 
 | `source:update-alert` | 音源更新提醒 |
 | `smoke:completed` | 冒烟测试完成 |
 | `smoke:failed` | 冒烟测试失败 |
+| `scrape:update` | 单任务刮削状态变更（含 `taskId`/`status`/`fieldsWritten`/`source`/`error`）|
+| `scrape:progress` | 批量刮削进度（`{ "done": n, "total": m }`）|
 
 每条事件格式：`event: <name>\ndata: <json>\n\n`。
 
@@ -394,13 +646,106 @@ es.addEventListener('task:completed', e => console.log('完成', JSON.parse(e.da
 **响应 200**：
 ```json
 {
-  "app": "ro", "version": "0.1.0", "uptimeSec": 3600,
+  "app": "ro", "version": "0.2.0", "uptimeSec": 3600,
   "node": "v22.x.x", "memoryMB": 198,
   "sources": { "loaded": 1, "ready": 1 },
   "tasks": { "pending": 0, "active": 1, "completed": 12, "failed": 0 }
 }
 ```
 > 开启鉴权时未授权访问返回 `401`（healthcheck 视 401 为「存活」，仅连接失败判宕机）。
+
+---
+
+## 8. 歌单 Playlists
+
+> 本章为 #57 补录（路由实际存在但此前未收录入档）。歌单内曲目顺序 = 加入顺序（`GET /:id` 的 `items[]` 即展示序）。
+
+端点总览：
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/v1/playlists` | 歌单列表（含 `count`，按更新时间倒序） |
+| `POST /api/v1/playlists` | 创建 `{ name, description? }` → `201` 歌单对象 |
+| `POST /api/v1/playlists/import` | 批量导入建单（#66，发现页榜单/平台歌单一键保存）：`{ title, description?, songs: [{ platform, musicInfo }] }` → `201` |
+| `GET /api/v1/playlists/:id` | 歌单详情（`items[]` 按加入顺序，含完整 `musicInfo`） |
+| `PATCH /api/v1/playlists/:id` | 改名 `{ name, description? }` |
+| `DELETE /api/v1/playlists/:id` | 删除歌单及其全部曲目 |
+| `POST /api/v1/playlists/:id/items` | 添加歌曲 `{ platform, musicInfo }`（同歌单内 `(platform, songmid)` 去重；已存在返回 `200 {"added":false}`，新增返回 `201`） |
+| `DELETE /api/v1/playlists/:id/items/:itemId` | 移除歌曲 |
+| `POST /api/v1/playlists/:id/download` | 整单批量下载 `{ quality? }`（逐首入队，返回 `accepted[]`） |
+
+### POST /api/v1/playlists/import
+
+批量导入建单（#66：单请求事务内建单 + 逐首入单，避免前端逐首 50 次 `POST /:id/items` 往返）。
+
+**请求体**：
+```json
+{
+  "title": "热歌榜",
+  "description": "来自发现页 · 网易云 · 2026-08-24",
+  "songs": [
+    { "platform": "wy", "musicInfo": { "name": "海屿你", "singer": "马也_Crabbit", "source": "wy", "songmid": "1973665667", "types": [] } }
+  ]
+}
+```
+
+- `title` 必填；`songs` 非空数组，**最多 200 首**；每个元素与 `POST /:id/items` 的 body 同构（`{ platform, musicInfo }`，`musicInfo` 必须含 `songmid` 与 `name`），另兼容直接传 `MusicInfo`（此时 `platform` 缺省取 `musicInfo.source`）
+- `musicInfo` 与 `GET /api/v1/search` 的 list item 同构——发现页 `hot-playlists` 的 `songs[].songInfo` 可原样传入（零转换）
+- 重名处理：同名歌单已存在时自动加后缀「`title (2)`」「`title (3)`」…，响应 `renamed: true`
+- 同批内 `(platform, songmid)` 重复自动去重（计入 `skippedCount`）；非法元素逐条拒收（计入 `rejected[]`），不影响其余歌曲
+
+**响应 201**：
+```json
+{
+  "id": "<uuid>", "name": "热歌榜", "description": "…",
+  "created_at": 1787300000000, "updated_at": 1787300000000,
+  "count": 50, "addedCount": 50, "skippedCount": 0,
+  "renamed": false, "rejectedCount": 0, "rejected": []
+}
+```
+
+**错误**：`400` title 缺失 / `songs` 非非空数组 / 超过 200 首 / 全部元素非法（`{ error: 'no valid song in songs', rejected }`）。
+
+**调用示例**：
+```bash
+curl -b cookie.txt -X POST "$BASE/api/v1/playlists/import" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"热歌榜","songs":[{"platform":"wy","musicInfo":{"name":"海屿你","singer":"马也_Crabbit","source":"wy","songmid":"1973665667"}}]}'
+```
+
+### PUT /api/v1/playlists/:id/items/order
+
+重排歌单曲目顺序（前端拖拽排序落库，#57）。**幂等**：传入同一顺序重复调用结果一致。
+
+实现取舍：零 schema 改动——曲目顺序由 `created_at` 升序表达，重排在事务内按新顺序重写时间戳（`created_at` 不在任何响应中暴露，语义损失可接受；避免已部署库的 `position` 列迁移）。
+
+**请求体**：`{ "itemIds": ["<itemId>", ...] }` —— 必须与该歌单现有曲目的 id **集合完全一致**（不多、不少、不重复），防部分重排丢歌。
+
+**响应 200**：
+```json
+{ "id": "<playlistId>", "reordered": true, "count": 12 }
+```
+
+**错误**：
+```jsonc
+// 404 歌单不存在
+{ "error": "playlist not found" }
+// 400 itemIds 非数组 / 空数组
+{ "error": "itemIds (non-empty array) is required" }
+// 400 长度或去重后数量与现集不符（缺项 / 重复）
+{ "error": "itemIds must cover the current item set exactly (no missing, no duplicates, no unknown ids)", "current": 12, "received": 11 }
+// 400 含未知 id
+{ "error": "itemIds contains unknown item id(s)", "current": 12, "received": 12 }
+```
+
+**调用示例**：
+```bash
+curl -X PUT "$BASE/api/v1/playlists/$PID/items/order" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"itemIds":["id-3","id-1","id-2"]}'
+# → { "id": "...", "reordered": true, "count": 3 }
+# 之后 GET /api/v1/playlists/$PID 的 items[] 顺序即为 id-3, id-1, id-2
+```
 
 ---
 
@@ -413,7 +758,9 @@ es.addEventListener('task:completed', e => console.log('完成', JSON.parse(e.da
 | `400` | 参数缺失或非法 |
 | `401` | 未授权（未登录 / API Key 无效）|
 | `404` | 资源不存在（任务/音源）|
-| `409` | 状态冲突（任务不可重试/取消）|
+| `409` | 状态冲突（任务不可重试/取消/未完成不可播放）|
+| `410` | 资源已消失（播放时任务文件缺失）|
+| `416` | Range 不可满足（播放接口）|
 | `201` | 创建成功（下载任务/音源导入）|
 
 ---
