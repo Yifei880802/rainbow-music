@@ -9,6 +9,7 @@
 import crypto from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { config, patchConfig, STARTUP_DOWNLOAD_DIR } from '../core/config.js'
+import { userIsAdmin } from '../core/auth/index.js'
 import { notify } from '../core/notify/index.js'
 import { downloadQueue } from '../core/download/queue.js'
 import { rescheduleSmoke } from '../core/smoke/scheduler.js'
@@ -114,6 +115,10 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/settings', async () => safeView())
 
   app.patch<{ Body: SettingsPatch }>('/api/v1/settings', async (req, reply) => {
+    // v0.2.1 模块三：全局配置变更限管理员（网关 Isadmin=false → 403；GET 保持可读）
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const body = req.body ?? {}
     // #73 顶层快捷字段 downloadDir 归一化为嵌套 download.dir（两处同传时以顶层为准）
     if (body.downloadDir !== undefined) {
@@ -154,7 +159,11 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
 
   // 随机生成一个新的 API Key：存盘并「仅此一次」在响应里返回明文。
   // 之后任何 GET /settings 都只能看到 apiKeySet=true，拿不到明文。
-  app.post('/api/v1/settings/apikey/generate', async () => {
+  app.post('/api/v1/settings/apikey/generate', async (req, reply) => {
+    // v0.2.1 模块三：凭据管理限管理员
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     // 32 字节 → 43 位 base64url，足够强；前缀 ro_ 方便识别
     const key = 'ro_' + crypto.randomBytes(32).toString('base64url')
     patchConfig({ auth: { apiKey: key } })
@@ -163,12 +172,20 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
   })
 
   // 撤销 / 清除当前 API Key
-  app.delete('/api/v1/settings/apikey', async () => {
+  app.delete('/api/v1/settings/apikey', async (req, reply) => {
+    // v0.2.1 模块三：凭据管理限管理员
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     patchConfig({ auth: { apiKey: '' } })
     return { ok: true, apiKeySet: false }
   })
 
-  app.post<{ Body: { title?: string; body?: string } }>('/api/v1/settings/notify/test', async (req) => {
+  app.post<{ Body: { title?: string; body?: string } }>('/api/v1/settings/notify/test', async (req, reply) => {
+    // v0.2.1 模块三：测试推送会触发外部通知渠道，限管理员
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const title = req.body?.title || 'Rainbow 测试 通知'
     const body = req.body?.body || `这是一条来自 Rainbow 的测试推送 (${new Date().toLocaleString('zh-CN')})`
     const results = await notify(title, body)

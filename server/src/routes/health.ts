@@ -2,10 +2,11 @@
  * 健康状态路由（R9）
  *   GET  /api/v1/health/smoke        最近一次冒烟结果 + 平台×音源矩阵
  *   GET  /api/v1/health/smoke/trend  最近 N 天趋势（?days=7）
- *   POST /api/v1/health/smoke/run    手动触发一次冒烟测试
+ *   POST /api/v1/health/smoke/run    手动触发一次冒烟测试（限管理员）
  */
 import type { FastifyInstance } from 'fastify'
 import { smokeStore } from '../core/db/smoke.js'
+import { userIsAdmin } from '../core/auth/index.js'
 import { runSmokeTest, isSmokeRunning } from '../core/smoke/index.js'
 
 /** 把最近一次 run 的逐步骤结果聚合为 音源×平台 矩阵单元格 */
@@ -56,6 +57,11 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.post('/api/v1/health/smoke/run', async (req, reply) => {
+    // v0.2.1 模块三：手动触发冒烟属全局操作，限管理员（网关 Isadmin=false → 403；
+    // GET /smoke 与 /smoke/trend 保持可读，与 settings/sources/scrape 同模式）
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     if (isSmokeRunning()) return reply.code(409).send({ error: '冒烟测试已在运行中' })
     // 异步跑，立即返回（前端用 SSE/轮询看结果）
     void runSmokeTest().catch(() => {})

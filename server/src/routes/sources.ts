@@ -11,6 +11,7 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { sourceEngine, type LoadedSource } from '../core/source-engine/index.js'
+import { userIsAdmin } from '../core/auth/index.js'
 import { runQuickSmoke, isQuickSmokeRunning } from '../core/smoke/quick.js'
 
 function view(s: LoadedSource) {
@@ -47,6 +48,10 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.post<{ Body: ImportContentBody }>('/api/v1/sources/import/content', async (req, reply) => {
+    // v0.2.1 模块三：音源脚本为可执行 JS，导入/启停/冒烟/删除等管理操作限管理员（GET 可读）
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const { name, content } = req.body ?? {}
     if (!content) return reply.code(400).send({ error: 'content is required' })
     try {
@@ -58,6 +63,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.post<{ Body: ImportUrlBody }>('/api/v1/sources/import/url', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const { url, name } = req.body ?? {}
     if (!url) return reply.code(400).send({ error: 'url is required' })
     try {
@@ -70,6 +78,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
 
   // multipart 文件上传（前端 <input type=file>）
   app.post('/api/v1/sources/upload', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const mp = await (req as unknown as { file: () => Promise<{ filename: string; toBuffer: () => Promise<Buffer> } | undefined> }).file()
     if (!mp) return reply.code(400).send({ error: 'no file uploaded' })
     const buf = await mp.toBuffer()
@@ -83,6 +94,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>('/api/v1/sources/:id/enabled', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const { enabled } = req.body ?? {}
     if (typeof enabled !== 'boolean') return reply.code(400).send({ error: 'enabled (boolean) is required' })
     try {
@@ -94,6 +108,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.post<{ Params: { id: string } }>('/api/v1/sources/:id/reload', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const rec = sourceEngine.get(req.params.id)
     if (!rec) return reply.code(404).send({ error: 'source not found' })
     try {
@@ -111,6 +128,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
    * 与定时全量冒烟（POST /api/v1/health/smoke/run，异步+落库+告警）互斥。
    */
   app.post('/api/v1/sources/smoke', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     if (isQuickSmokeRunning()) return reply.code(409).send({ error: '快速冒烟已在运行中' })
     try {
       return await runQuickSmoke()
@@ -122,6 +142,9 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.delete<{ Params: { id: string } }>('/api/v1/sources/:id', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     if (!sourceEngine.get(req.params.id)) return reply.code(404).send({ error: 'source not found' })
     await sourceEngine.remove(req.params.id)
     return { id: req.params.id, deleted: true }

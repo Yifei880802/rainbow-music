@@ -7,11 +7,16 @@
  */
 import type { FastifyInstance } from 'fastify'
 import { scrapeService } from '../core/scrape.js'
+import { userIsAdmin } from '../core/auth/index.js'
 
 export async function scrapeRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { taskId: string }; Querystring: { force?: string } }>(
     '/api/v1/tasks/:taskId/scrape',
     async (req, reply) => {
+      // v0.2.1 模块三：刮削重试/全量/重置均为管理面变更操作，限管理员（GET status 可读）
+      if (!userIsAdmin(req.user)) {
+        return reply.code(403).send({ error: '需要管理员权限' })
+      }
       const force = req.query.force === 'true' || req.query.force === '1'
       const r = await scrapeService.enqueue(req.params.taskId, { force, reason: 'manual' })
       if (!r.ok) {
@@ -22,7 +27,10 @@ export async function scrapeRoutes(app: FastifyInstance): Promise<void> {
     },
   )
 
-  app.post<{ Querystring: { force?: string } }>('/api/v1/scrape/all', async (req) => {
+  app.post<{ Querystring: { force?: string } }>('/api/v1/scrape/all', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
     const force = req.query.force === 'true' || req.query.force === '1'
     const r = await scrapeService.scrapeAll(force)
     return reply202(r)
@@ -31,7 +39,12 @@ export async function scrapeRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/v1/scrape/status', async () => scrapeService.status())
 
   // #47 重置全部刮削状态：scrape_status → pending、scrape_info → NULL（仅清簿记，不动文件标签）
-  app.post('/api/v1/scrape/reset', async () => ({ reset: scrapeService.resetAll() }))
+  app.post('/api/v1/scrape/reset', async (req, reply) => {
+    if (!userIsAdmin(req.user)) {
+      return reply.code(403).send({ error: '需要管理员权限' })
+    }
+    return { reset: scrapeService.resetAll() }
+  })
 
   function reply202(r: { queued: number; skipped: number }) {
     return { queued: r.queued, skipped: r.skipped }

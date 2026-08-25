@@ -1,6 +1,6 @@
 /**
- * 歌单管理路由（首版）
- *   GET    /api/v1/playlists              歌单列表（含歌曲数）
+ * 歌单管理路由（首版；v0.2.1 模块三 uid 贯通）
+ *   GET    /api/v1/playlists              歌单列表（含歌曲数，限当前用户）
  *   POST   /api/v1/playlists              创建 { name, description? }
  *   POST   /api/v1/playlists/import       批量导入建单（#66：发现页榜单/平台歌单一键保存）
  *   GET    /api/v1/playlists/:id          歌单详情（含歌曲，按加入顺序）
@@ -10,6 +10,9 @@
  *   DELETE /api/v1/playlists/:id/items/:itemId  移除歌曲
  *   PUT    /api/v1/playlists/:id/items/order    重排曲目 { itemIds: [...] }（#57）
  *   POST   /api/v1/playlists/:id/download 整单批量下载 { quality? }
+ *
+ * uid 口径：req.user.uid（网关用户隔离）；本地 admin 登录 = 'legacy' →
+ * v0.2.0 存量歌单（user_id='legacy'）全部可见，本地模式行为不变。
  */
 import type { FastifyInstance } from 'fastify'
 import { playlistStore } from '../core/db/playlists.js'
@@ -20,15 +23,20 @@ import type { Quality } from '../core/source-engine/lx-env.js'
 
 const VALID_QUALITIES: Quality[] = ['flac24bit', 'flac', '320k', '128k']
 
+/** 当前请求身份 uid（鉴权关闭等 req.user=null 场景兑底 'legacy'，与存量数据对齐） */
+function requestUid(req: { user: { uid: string } | null }): string {
+  return req.user?.uid ?? 'legacy'
+}
+
 export async function playlistRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/v1/playlists', async () => {
-    return { playlists: playlistStore.list() }
+  app.get('/api/v1/playlists', async (req) => {
+    return { playlists: playlistStore.list(requestUid(req)) }
   })
 
   app.post<{ Body: { name?: string; description?: string } }>('/api/v1/playlists', async (req, reply) => {
     const { name, description } = req.body ?? {}
     if (!name || !name.trim()) return reply.code(400).send({ error: 'name is required' })
-    const row = playlistStore.create(name.trim(), description ?? '')
+    const row = playlistStore.create(name.trim(), description ?? '', requestUid(req))
     return reply.code(201).send(row)
   })
 
@@ -67,13 +75,15 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // 重名自动加后缀：同名歌单已存在 → 「title (2)」「title (3)」…（响应 renamed=true）
+    const uid = requestUid(req)
     let finalName = name
-    for (let n = 2; playlistStore.existsByName(finalName); n++) finalName = `${name} (${n})`
+    for (let n = 2; playlistStore.existsByName(finalName, uid); n++) finalName = `${name} (${n})`
 
     const { row, addedCount, skippedCount } = playlistStore.createWithItems(
       finalName,
       (description ?? '').slice(0, 500),
       items,
+      uid,
     )
     return reply.code(201).send({
       ...row,
@@ -87,7 +97,7 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
   })
 
   app.get<{ Params: { id: string } }>('/api/v1/playlists/:id', async (req, reply) => {
-    const p = playlistStore.get(req.params.id)
+    const p = playlistStore.get(req.params.id, requestUid(req))
     if (!p) return reply.code(404).send({ error: 'playlist not found' })
     const items = playlistStore.items(req.params.id).map((it) => ({
       id: it.id,
@@ -104,23 +114,24 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
   app.patch<{ Params: { id: string }; Body: { name?: string; description?: string } }>('/api/v1/playlists/:id', async (req, reply) => {
     const { name, description } = req.body ?? {}
     if (!name || !name.trim()) return reply.code(400).send({ error: 'name is required' })
-    const ok = playlistStore.rename(req.params.id, name.trim(), description)
+    const ok = playlistStore.rename(req.params.id, name.trim(), description, requestUid(req))
     if (!ok) return reply.code(404).send({ error: 'playlist not found' })
     return { id: req.params.id, name: name.trim() }
   })
 
   app.delete<{ Params: { id: string } }>('/api/v1/playlists/:id', async (req, reply) => {
-    const ok = playlistStore.remove(req.params.id)
+    const ok = playlistStore.remove(req.params.id, requestUid(req))
     if (!ok) return reply.code(404).send({ error: 'playlist not found' })
     return { id: req.params.id, deleted: true }
   })
 
   app.post<{ Params: { id: string }; Body: { platform?: string; musicInfo?: MusicInfo } }>('/api/v1/playlists/:id/items', async (req, reply) => {
+    const uid = requestUid(req)
+    if (!playlistStore.get(req.params.id, uid)) return reply.code(404).send({ error: 'playlist not found' })
     const { platform, musicInfo } = req.body ?? {}
-    if (!playlistStore.get(req.params.id)) return reply.code(404).send({ error: 'playlist not found' })
     if (!platform || !isPlatform(platform)) return reply.code(400).send({ error: 'invalid platform', valid: ALL_PLATFORMS })
     if (!musicInfo || !musicInfo.songmid || !musicInfo.name) return reply.code(400).send({ error: 'musicInfo (with songmid & name) is required' })
-    const added = playlistStore.addItem(req.params.id, platform, musicInfo)
+    const added = playlistStore.addItem(req.params.id, platform, musicInfo, uid)
     return reply.code(added ? 201 : 200).send({ added, message: added ? '已添加' : '歌曲已存在' })
   })
 
@@ -134,7 +145,7 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
   // itemIds 必须与歌单现有曲目集合完全一致（不多、不少、不重复），防部分重排丢歌。
   app.put<{ Params: { id: string }; Body: { itemIds?: string[] } }>('/api/v1/playlists/:id/items/order', async (req, reply) => {
     const { itemIds } = req.body ?? {}
-    if (!playlistStore.get(req.params.id)) return reply.code(404).send({ error: 'playlist not found' })
+    if (!playlistStore.get(req.params.id, requestUid(req))) return reply.code(404).send({ error: 'playlist not found' })
     if (!Array.isArray(itemIds) || itemIds.length === 0) {
       return reply.code(400).send({ error: 'itemIds (non-empty array) is required' })
     }
@@ -152,7 +163,7 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
 
   // 整单批量下载：把歌单里所有歌曲入队
   app.post<{ Params: { id: string }; Body: { quality?: Quality } }>('/api/v1/playlists/:id/download', async (req, reply) => {
-    if (!playlistStore.get(req.params.id)) return reply.code(404).send({ error: 'playlist not found' })
+    if (!playlistStore.get(req.params.id, requestUid(req))) return reply.code(404).send({ error: 'playlist not found' })
     const quality = req.body?.quality ?? 'flac'
     if (!VALID_QUALITIES.includes(quality)) return reply.code(400).send({ error: 'invalid quality', valid: VALID_QUALITIES })
     const items = playlistStore.items(req.params.id)

@@ -9,6 +9,12 @@ import { sourceEngine } from './source-engine/index.js'
 export interface RoEvent {
   event: string
   data: unknown
+  /**
+   * v0.2.1（模块三）：定向事件目标 uid（如模块四 scan:progress）。
+   * 带 uid 的事件只推给同 uid 的 SSE 连接（跨用户不泄漏）；
+   * 缺省 = 全局广播（task:* 下载事件为共享资源，维持现状）。
+   */
+  uid?: string
 }
 
 class EventBus extends EventEmitter {}
@@ -42,7 +48,7 @@ export function wireEvents(): void {
   forward(sourceEngine, ['source:changed', 'source:update-alert'])
 }
 
-/** 冒烟测试等其他模块可直接往总线发事件（阶段 6 用） */
-export function emitEvent(event: string, data: unknown): void {
-  eventBus.emit('event', { event, data } satisfies RoEvent)
+/** 冒烟测试等其他模块可直接往总线发事件（阶段 6 用）；uid 可选 → 定向推送 */
+export function emitEvent(event: string, data: unknown, uid?: string): void {
+  eventBus.emit('event', { event, data, uid } satisfies RoEvent)
 }

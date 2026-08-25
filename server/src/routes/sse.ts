@@ -7,6 +7,10 @@
  *   task:completed_with_warnings / task:failed / task:canceled /
  *   source:changed / source:update-alert / smoke:completed / smoke:failed
  *
+ * v0.2.1（模块三）：连接建立时记录该连接的 uid（req.user）；事件对象带 uid
+ * 字段时仅推给同 uid 连接（如模块四 scan:progress）；现有 task:* 等事件
+ * 不带 uid → 维持全局广播不变。
+ *
  * 客户端断线重连后应调用 GET /api/v1/tasks 做一次全量对账。
  */
 import type { FastifyInstance } from 'fastify'
@@ -30,7 +34,12 @@ export async function sseRoutes(app: FastifyInstance): Promise<void> {
     // 首包：告知已连接 + 建议全量对账
     reply.raw.write(`event: connected\ndata: ${JSON.stringify({ ts: Date.now() })}\n\n`)
 
+    // v0.2.1：记录本连接身份 uid（鉴权关闭等场景为 null → 只收全局广播）
+    const connUid = req.user?.uid ?? null
+
     const onEvent = (evt: RoEvent): void => {
+      // 定向过滤：事件带 uid 且与本连接 uid 不一致 → 不推（跨用户不泄漏）
+      if (evt.uid !== undefined && evt.uid !== connUid) return
       try {
         reply.raw.write(`event: ${evt.event}\ndata: ${JSON.stringify(evt.data)}\n\n`)
       } catch (err) {

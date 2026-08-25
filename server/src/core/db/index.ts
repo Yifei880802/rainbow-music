@@ -89,6 +89,81 @@ export function initDb(): Database.Database {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    -- ── v0.2.1 多用户基础（模块一）：身份与个人数据表（全部幂等 CREATE IF NOT EXISTS）──
+    -- users：网关身份落地表。uid 保留 INTEGER PK（网关 uid 本为数字）；
+    -- 其余各表 uid 统一 TEXT（网关数字 uid 转字符串；本地模式固定 'legacy'）。
+    CREATE TABLE IF NOT EXISTS users (
+      uid INTEGER PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS user_scan_roots (
+      uid TEXT NOT NULL,
+      path TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      UNIQUE(uid, path)
+    );
+    CREATE TABLE IF NOT EXISTS library_tracks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uid TEXT NOT NULL,
+      path TEXT NOT NULL,
+      size INTEGER,
+      mtime_ms INTEGER,
+      title TEXT,
+      artist TEXT,
+      album TEXT,
+      duration_ms INTEGER,
+      format TEXT,
+      cover_state INTEGER NOT NULL DEFAULT 0,
+      meta_state INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(uid, path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_lt_uid_artist ON library_tracks(uid, artist);
+    CREATE INDEX IF NOT EXISTS idx_lt_uid_album ON library_tracks(uid, album);
+    CREATE INDEX IF NOT EXISTS idx_lt_uid_updated ON library_tracks(uid, updated_at);
+    CREATE TABLE IF NOT EXISTS play_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uid TEXT NOT NULL,
+      track_json TEXT NOT NULL,
+      played_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ph_uid_time ON play_history(uid, played_at DESC);
+    CREATE TABLE IF NOT EXISTS favorites (
+      uid TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      ref TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(uid, kind, ref)
+    );
+    -- 歌单两表（含 user_id 归属列的最新定义；此处为权威 DDL，
+    -- core/db/playlists.ts 的 ensureTables 仅作防御性兑底，不再建表）
+    CREATE TABLE IF NOT EXISTS playlists (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL DEFAULT 'legacy',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS playlist_items (
+      id TEXT PRIMARY KEY,
+      playlist_id TEXT NOT NULL,
+      user_id TEXT NOT NULL DEFAULT 'legacy',
+      platform TEXT NOT NULL,
+      songmid TEXT NOT NULL,
+      name TEXT NOT NULL,
+      singer TEXT NOT NULL DEFAULT '',
+      album TEXT NOT NULL DEFAULT '',
+      music_info TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_pitems_playlist ON playlist_items(playlist_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pitems_uniq ON playlist_items(playlist_id, platform, songmid);
   `)
   // 安全迁移：旧库缺 requeue_count 列时补列（PRAGMA table_info 检测后 ALTER）
   const cols = db.pragma('table_info(download_tasks)') as { name: string }[]
@@ -105,6 +180,33 @@ export function initDb(): Database.Database {
   if (!cols.some((c) => c.name === 'scrape_info')) {
     db.exec(`ALTER TABLE download_tasks ADD COLUMN scrape_info TEXT`)
     logger.info('[db] migrated: added column download_tasks.scrape_info')
+  }
+  // ── v0.2.1 多用户迁移（模块一）：存量表补归属列（PRAGMA 检测幂等；
+  // 默认 'legacy' → v0.2.0 存量数据自动归属本地 admin，本地模式行为零变化）──
+  // requested_by 纯预留（可空、不写值），供后续下载任务归属增强使用。
+  if (!cols.some((c) => c.name === 'requested_by')) {
+    db.exec(`ALTER TABLE download_tasks ADD COLUMN requested_by TEXT`)
+    logger.info('[db] migrated: added column download_tasks.requested_by')
+  }
+  const plCols = db.pragma('table_info(playlists)') as { name: string }[]
+  if (!plCols.some((c) => c.name === 'user_id')) {
+    db.exec(`ALTER TABLE playlists ADD COLUMN user_id TEXT NOT NULL DEFAULT 'legacy'`)
+    logger.info("[db] migrated: added column playlists.user_id (default 'legacy')")
+  }
+  const pliCols = db.pragma('table_info(playlist_items)') as { name: string }[]
+  if (!pliCols.some((c) => c.name === 'user_id')) {
+    db.exec(`ALTER TABLE playlist_items ADD COLUMN user_id TEXT NOT NULL DEFAULT 'legacy'`)
+    logger.info("[db] migrated: added column playlist_items.user_id (default 'legacy')")
+  }
+  // ── v0.2.1 模块四（本地音乐库扫描引擎）：library_tracks 补轮次列（幂等 PRAGMA 检测后 ALTER）。
+  // seen_round = 该行文件最后一次被扫描看到的轮次号（per-uid 轮次计数持久化在 meta 表
+  // key=library_scan_round:<uid>）；「消失文件连续 2 轮扫描未出现才 DELETE」的判定依据：
+  // 当前轮 R 执行 DELETE ... WHERE uid=? AND seen_round <= R-2（详见 core/library/scanner.ts）。
+  // DEFAULT 0：存量行首轮宽容（0 <= R-2 在 R=1/2 时不成立），第二轮起按两轮规则收敛。
+  const ltCols = db.pragma('table_info(library_tracks)') as { name: string }[]
+  if (ltCols.length > 0 && !ltCols.some((c) => c.name === 'seen_round')) {
+    db.exec(`ALTER TABLE library_tracks ADD COLUMN seen_round INTEGER NOT NULL DEFAULT 0`)
+    logger.info('[db] migrated: added column library_tracks.seen_round')
   }
   stripLegacyRequeueBookkeeping(db)
   logger.info(`SQLite ready at ${dbPath}`)
