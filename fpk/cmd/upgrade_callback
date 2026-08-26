@@ -1,19 +1,57 @@
 #!/bin/bash
 #
-# Rainbow 音乐下载 — 升级钩子：upgrade_callback
+# Rainbow 音乐下载 — 升级钩子：upgrade_callback（v0.2.3）
 #
-# 升级文件应用后执行：compose 文件已随新版本替换（含 __WIZ_SCAN_ROOTS__ 占位符与
-# 网关挂载），重新拉起容器。数据卷（${TRIM_PKGVAR}）不动，配置（${TRIM_PKGETC}）不重渲染。
-# v0.2.1：幂等补渲染音乐库扫描目录挂载与 RO_SCAN_ROOTS —— 老安装（v0.2.0）升级后
-# 同样获得网关挂载与新 env；升级无向导值，回读 ${TRIM_PKGETC}/scan-dirs.conf 恢复
-# 用户安装时的扫描目录选择，无记录则渲染默认（仅下载目录）。
+# 职责边界（对齐 install_callback）：只做配置渲染与数据目录补齐，
+# 容器拉起由 fnOS 升级主流程在回调成功后执行。
+#
+# v0.2.1 真机升级失败复盘（fnOS TRIM ME mini，两次 update/task 均于 ~4 秒内失败，
+# 错误码 10374「执行更新回调脚本失败」，compose 的 sed 渲染从未执行到——mtim 未变）：
+#   1. fnOS 升级流程会移除 compose 中 __XXX__ 命名空间内容：__WIZ_SCAN_ROOTS__ env 行与
+#      __WIZ_SCAN_VOLUMES__ 注释锚点均被剥离（打包版 2235B → 落盘 1274B）→ v0.2.2 起模板
+#      默认值直写 + 锚点改名（见 _common.render_scan_mounts）
+#   2. 回调执行环境疑似与安装回调不同（TRIM_* 注入不完整或缺失），set -eu 在早期某行
+#      直接崩溃且未经过 log_error（fnOS outputText 为空）→ 本脚本改为防御式：不用 -e、
+#      关键变量 fnOS 标准布局兜底、每步显式容错，并落步进探针（.rb-upgrade-probe/）
+#      供升级失败时从宿主侧定位确切失败点
+#   3. v0.2.2 真机复测（0.2.2 防御式回调）：渲染/日志均正常执行，但 compose_up 报
+#      「permission denied while trying to connect to the Docker daemon socket」——
+#      升级回调执行环境无 docker.sock 权限 → v0.2.3 起回调不再 compose_up，
+#      容器重建交给 fnOS 主流程（与 install 流程一致：install_callback 亦不 up）
+#
+# 幂等：重复执行不报错、不破坏已有数据。
 
-set -eu
+set -u
+
+# 环境兜底（fnOS 应用标准布局；仅当 fnOS 未注入时生效，实测路径取自真机 inspect）
+: "${TRIM_APPDEST:=/vol2/@appcenter/com.rainbow.music}"
+: "${TRIM_PKGVAR:=/vol2/@appdata/com.rainbow.music}"
+: "${TRIM_PKGETC:=/vol2/@appconf/com.rainbow.music}"
+
+# 诊断探针：目录 + 步进标记 + fnOS 注入的 TRIM_* 键清单（宿主侧逐项 file 探测可还原现场）
+PROBE_DIR="${TRIM_APPDEST}/.rb-upgrade-probe"
+mkdir -p "$PROBE_DIR" 2>/dev/null || true
+rb_step() { : > "${PROBE_DIR}/step-$1" 2>/dev/null || true; }
+rb_step "01-start"
+env 2>/dev/null | grep -o '^TRIM_[A-Z_]*' | while IFS= read -r k; do
+    : > "${PROBE_DIR}/key-$k" 2>/dev/null || true
+done
+rb_step "02-env"
 
 # shellcheck source=/dev/null
-source "$(cd "$(dirname "$0")" && pwd)/_common"
+source "$(cd "$(dirname "$0")" && pwd)/_common" || rb_step "03-source-FAILED"
+rb_step "03-source"
 
-ensure_data_dirs
-render_scan_mounts
-compose_up
+# 数据目录幂等补齐（失败不阻断——目录大概率已存在）
+mkdir -p "${TRIM_PKGVAR}/data/downloads" "${TRIM_PKGVAR}/data/sources" "${TRIM_PKGVAR}/data/db" 2>/dev/null || true
+rb_step "04-dirs"
+
+# 扫描挂载渲染（幂等；fnOS 已剥离 RO_SCAN_ROOTS 行时 sed 无匹配静默通过，
+# 服务端对 env 缺失兜底为默认下载目录，行为一致）
+render_scan_mounts || rb_step "05-render-FAILED"
+rb_step "05-render"
+
+# v0.2.3：不做 compose_up —— 升级回调执行环境无 docker.sock 权限（真机实测），
+# 容器拉起由 fnOS 升级主流程在回调成功后执行（与 install 流程职责边界一致）
+rb_step "06-done"
 exit 0

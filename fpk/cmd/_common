@@ -189,15 +189,22 @@ parse_scan_dirs() {
 
 render_scan_mounts() {
     # 渲染 compose 的扫描目录挂载行与 RO_SCAN_ROOTS 环境变量：
-    #   - 传参（可为空串）：以向导值为准，并把原始输入持久化到 ${SCAN_DIRS_FILE}
-    #   - 不传参（升级等无向导场景）：回读持久化记录；无记录则渲染默认（仅下载目录）
+    #   - 传非空参：以向导值为准，并把原始输入持久化到 ${SCAN_DIRS_FILE}
+    #   - 不传参或空串：回读持久化记录；无记录则渲染默认（仅下载目录）
     # 幂等：先清理历史渲染的挂载行，再按锚点重建，同值重复渲染输出完全一致；
     #       RO_SCAN_ROOTS 按行前缀整行替换，兼容占位符与已渲染两种状态
     # 容错：目录不存在仅 log_info 警告并跳过，绝不 exit 1（防应用起不来）
+    # v0.2.2：fnOS 升级流程会移除 compose 中 __XXX__ 命名空间内容（旧版 __WIZ_SCAN_ROOTS__
+    #       env 行与 __WIZ_SCAN_VOLUMES__ 注释锚点均被剥离）；v0.2.2 起模板默认值直写、
+    #       锚点改为 rainbow-scan-volumes-anchor；锚点不存在时仅跳过挂载插入（不报错），
+    #       RO_SCAN_ROOTS 行不存在时 sed 无匹配同样静默（服务端 env 缺失时兜底为默认下载目录）
+    # v0.2.4：fnOS 升级流程会带空 wizard 参数重跑 install_callback（真机实测：升级后
+    #       scan-dirs.conf 被空参调用清空，mtim 与升级时刻一致）——空参不再覆盖持久化，
+    #       只有向导有非空值才写入；全新安装空值与升级重跑空参都回落回读/默认，行为安全
     compose_file_ok || return 0
     local raw="" dir i=0
     local roots="/app/data/downloads"
-    if [ "$#" -ge 1 ]; then
+    if [ "$#" -ge 1 ] && [ -n "$1" ]; then
         raw="$1"
         if [ -n "${TRIM_PKGETC:-}" ]; then
             printf '%s\n' "$raw" > "$SCAN_DIRS_FILE" 2>/dev/null || true
@@ -218,15 +225,23 @@ render_scan_mounts() {
         fi
     done < <(parse_scan_dirs "$raw")
     # 幂等重建：先删历史挂载行（仅 volumes 段的 - xxx:/app/data/scan/N 形态，
-    # 不会误伤 RO_SCAN_ROOTS 值行），再在锚点注释行后插入当前挂载集
+    # 不会误伤 RO_SCAN_ROOTS 值行），再在锚点注释行后插入当前挂载集；
+    # 兼容 v0.2.1 旧锚点（fnOS 若未剥离仍可匹配），锚点不存在时跳过插入不报错
     sed -i.bak '/^[[:space:]]*- .*:\/app\/data\/scan\/[0-9][0-9]*$/d' "$COMPOSE_FILE"
     rm -f "${COMPOSE_FILE}.bak"
     if [ -s "$vol_tmp" ]; then
-        sed -i.bak "/__WIZ_SCAN_VOLUMES__/r ${vol_tmp}" "$COMPOSE_FILE"
-        rm -f "${COMPOSE_FILE}.bak"
+        if grep -q 'rainbow-scan-volumes-anchor' "$COMPOSE_FILE" 2>/dev/null; then
+            sed -i.bak "/rainbow-scan-volumes-anchor/r ${vol_tmp}" "$COMPOSE_FILE"
+            rm -f "${COMPOSE_FILE}.bak"
+        elif grep -q '__WIZ_SCAN_VOLUMES__' "$COMPOSE_FILE" 2>/dev/null; then
+            sed -i.bak "/__WIZ_SCAN_VOLUMES__/r ${vol_tmp}" "$COMPOSE_FILE"
+            rm -f "${COMPOSE_FILE}.bak"
+        else
+            log_info "compose 锚点不存在（可能被 fnOS 剥离），跳过扫描目录挂载插入：${vol_tmp} 行"
+        fi
     fi
     rm -f "$vol_tmp"
-    sed -i.bak "s|^\([[:space:]]*\)RO_SCAN_ROOTS:.*|\1RO_SCAN_ROOTS: \"${roots}\"|" "$COMPOSE_FILE"
+    sed -i.bak "s|^\([[:space:]]*\)RO_SCAN_ROOTS:.*|\1RO_SCAN_ROOTS: \"${roots}\"|" "$COMPOSE_FILE" || true
     rm -f "${COMPOSE_FILE}.bak"
     log_info "音乐库扫描根渲染完成：RO_SCAN_ROOTS=${roots}（额外挂载 ${i} 个目录）"
 }

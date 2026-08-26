@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.1
+version=0.2.4
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录，卸载不丢数据。
 source=thirdparty
@@ -13,4 +13,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=23330
 checkport=true
 ctl_stop=true
-changelog=新增统一网关入口（FN ID 免密登录、多用户可见）与本地音乐库：安装向导可配置 NAS 扫描目录，下载内容与扫描曲目统一管理；保留原端口直连入口与 admin 账密登录，老版本数据与配置升级后完整保留。
+changelog=升级渲染链路修复（镜像不变，服务端仍为 v0.2.1）：fnOS 升级流程会带空 wizard 参数重跑 install_callback（真机实测：升级后 scan-dirs.conf 被空参调用清空，用户持久化的扫描目录选择丢失）——render_scan_mounts 改为只有非空参才覆盖持久化，空参/不传参一律回读记录，升级后扫描目录挂载得以正确恢复。其余与 v0.2.3 一致：upgrade_callback 不 compose_up（fnOS 升级回调环境无 docker.sock 权限），compose 模板默认值直写、锚点改名，回调防御式重写。功能与 v0.2.1 一致：统一网关入口（FN ID 免密登录）、多用户隔离、本地音乐库扫描。
