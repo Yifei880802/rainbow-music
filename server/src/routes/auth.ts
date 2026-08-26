@@ -30,6 +30,11 @@ import {
 } from '../core/auth/index.js'
 import { parseGatewayUser, upsertUser } from '../core/auth/fnid.js'
 
+/** fnOS 统一网关转发前缀（v0.2.5）：网关按官方语义保留完整前缀转发到应用 socket，
+ *  网关实例由 index.ts 的 rewriteUrl 在路由查找前剥除（路由/守卫/限流均按无前缀路径工作）；
+ *  此常量同时供守卫 302 拼接带前缀的登录页地址（iframe 内不能跳无前缀根路径） */
+export const GATEWAY_URL_PREFIX = '/app/com.rainbow.music'
+
 /** 插件级选项：由 buildApp 按实例传入（index.ts） */
 export interface AuthPluginOptions {
   trustGatewayHeaders?: boolean
@@ -125,7 +130,9 @@ export function registerAuthGuard(app: any, opts: { trustGatewayHeaders: boolean
     if (url.startsWith('/api/')) {
       return reply.code(401).send({ error: '未授权，请先登录或提供有效 API Key' })
     }
-    return reply.redirect('/login.html')
+    // v0.2.5：网关实例的 302 必须落在前缀内（iframe 里跳无前缀根路径会 404），
+    // TCP 实例维持原绝对路径 /login.html（直连场景页面即根路径，行为不变）
+    return reply.redirect(opts.trustGatewayHeaders ? GATEWAY_URL_PREFIX + '/login.html' : '/login.html')
   })
 }
 

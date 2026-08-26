@@ -19,7 +19,7 @@ import { playlistRoutes } from './routes/playlists.js'
 import { settingsRoutes } from './routes/settings.js'
 import { scrapeRoutes } from './routes/scrape.js'
 import { healthRoutes } from './routes/health.js'
-import { authRoutes, registerAuthGuard } from './routes/auth.js'
+import { authRoutes, registerAuthGuard, GATEWAY_URL_PREFIX } from './routes/auth.js'
 import { meRoutes } from './routes/me.js'
 import { libraryRoutes } from './routes/library.js' // v0.2.1 模块四：本地音乐库扫描/流播/封面
 import { createRateLimiter } from './core/rate-limit.js'
@@ -38,6 +38,32 @@ interface BuildAppOptions {
 }
 
 /**
+ * 网关前缀剥离（v0.2.5）：fnOS 统一网关按官方语义**保留完整前缀**转发——
+ * `GET /app/com.rainbow.music/api/v1/...` 原样到达应用 socket（fygo 实践一致）。
+ * 网关实例用 Fastify 的 rewriteUrl 构造选项在**路由查找之前**剥掉前缀段，
+ * 使路由/鉴权守卫/限流/静态资源全部按无前缀路径工作；TCP 实例零改动。
+ *
+ * 注意不能用 onRequest hook 改 url：Fastify 的路由匹配发生在 onRequest 之前，
+ * hook 里改写对本次请求的路由结论无效；rewriteUrl 是官方提供的路由查找前
+ * 重写点（直接改写 raw req.url，守卫/限流读的 req.raw.url 同步生效）。
+ * 纯字符串操作不经 URL 对象解析（req.url 是相对形态）；任何异常 fail-open
+ * 返回原 url（等价无前缀行为，由静态兜底/404 自然接管）。
+ */
+function stripGatewayPrefix(req: { url?: string }): string {
+  try {
+    const url = req.url ?? ''
+    // 前缀根（无尾斜杠）：重写为 /；带 query 时保留 query 部分
+    if (url === GATEWAY_URL_PREFIX) return '/'
+    if (url.startsWith(GATEWAY_URL_PREFIX + '?')) return '/' + url.slice(GATEWAY_URL_PREFIX.length)
+    // 前缀 + 路径：去掉前缀段，保留 / 起始的剩余部分与 query
+    if (url.startsWith(GATEWAY_URL_PREFIX + '/')) return url.slice(GATEWAY_URL_PREFIX.length)
+    return url
+  } catch {
+    return req.url ?? '/'
+  }
+}
+
+/**
  * 构建 Fastify 实例（插件/路由/静态资源注册；不含任何单例初始化——
  * sourceEngine/downloadQueue/wireEvents/scrapeService/startSmokeScheduler/
  * cleanupTmpResidue 均在 main() 顶层只跑一次，两实例共享，绝不能进本函数）。
@@ -45,6 +71,8 @@ interface BuildAppOptions {
 async function buildApp(opts: BuildAppOptions) {
   const app = Fastify({
     loggerInstance: opts.trustGatewayHeaders ? logger.child({ inst: 'gateway' }) : logger,
+    // 仅网关实例启用前缀重写（v0.2.5）；TCP 实例无此选项，行为不变
+    ...(opts.trustGatewayHeaders ? { rewriteUrl: stripGatewayPrefix } : {}),
   })
 
   await app.register(fastifyMultipart, { limits: { fileSize: 5 * 1024 * 1024 } })
@@ -109,8 +137,8 @@ async function main(): Promise<void> {
   await tcpApp.listen({ host: config.server.host, port: config.server.port })
   logger.info(`Rainbow server listening on http://${config.server.host}:${config.server.port}`)
 
-  // ── 网关实例（仅当 RO_GATEWAY_SOCK 存在：Unix Socket + 采信 X-Trim-* 头；
-  //    未设置该环境变量时行为与 v0.2.0 完全一致，单 TCP 实例）──
+  // ── 网关实例（仅当 RO_GATEWAY_SOCK 存在：Unix Socket + 采信 X-Trim-* 头 +
+  //    v0.2.5 前缀重写；未设置该环境变量时行为与 v0.2.0 完全一致，单 TCP 实例）──
   const sockPath = process.env.RO_GATEWAY_SOCK
   if (sockPath) {
     const gwApp = await buildApp({ trustGatewayHeaders: true })
@@ -127,7 +155,21 @@ async function main(): Promise<void> {
     } catch (err) {
       logger.warn({ err: (err as Error).message }, `[gateway] chmod ${sockPath} failed (ignored)`)
     }
-    logger.info(`Rainbow gateway instance listening on unix socket ${sockPath} (X-Trim-* headers trusted)`)
+    // v0.2.5：socket 属主对齐应用运行身份（fygo 实践：网关以应用 uid/gid 连接 socket；
+    // 容器以 root 运行时 socket 建成 root:root，属主不匹配时网关可能连不上）。
+    // TRIM_RUN_UID/TRIM_RUN_GID 由 fnOS 渲染 compose 注入（纯数字校验，非法/缺省跳过）；
+    // chown 失败仅告警不阻塞启动——属主问题至多影响网关链路，应用本身必须能起。
+    const runUid = /^\d+$/.test(process.env.TRIM_RUN_UID ?? '') ? Number(process.env.TRIM_RUN_UID) : null
+    const runGid = /^\d+$/.test(process.env.TRIM_RUN_GID ?? '') ? Number(process.env.TRIM_RUN_GID) : null
+    if (runUid !== null && runGid !== null) {
+      try {
+        fs.chownSync(sockPath, runUid, runGid)
+        logger.info(`[gateway] socket owner set to ${runUid}:${runGid}`)
+      } catch (err) {
+        logger.warn({ err: (err as Error).message }, `[gateway] chown ${sockPath} failed (ignored)`)
+      }
+    }
+    logger.info(`Rainbow gateway instance listening on unix socket ${sockPath} (X-Trim-* headers trusted, prefix ${GATEWAY_URL_PREFIX} stripped)`)
   }
 
   registerGracefulShutdown(apps)
