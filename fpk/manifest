@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.5
+version=0.2.6
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 source=thirdparty
@@ -11,7 +11,7 @@ maintainer=Rainbow
 distributor=Rainbow
 desktop_uidir=ui
 desktop_applaunchname=com.rainbow.music.Gateway
-service_port=23330
-checkport=true
+service_port=0
+checkport=false
 ctl_stop=true
-changelog=网关入口修复：manifest 声明 micro_app 使 fnOS 注册统一网关路由（此前入口 404 的根因）；服务端适配网关前缀转发；前端路径适配 iframe 场景；桌面收敛为单一网关入口（FN ID 免密），TCP 23330 直连保留。
+changelog=网关就绪修复：checkport 端口健康检查对网关型应用恒失败导致 fnOS 判应用未就绪、网关路由禁用（真机实测根因），对齐官方网关应用形态 service_port=0/checkport=false；容器端口改为字面量映射 23330 保 LAN 直连；FN ID 网关免密入口与 TCP 直连均可用

@@ -3,12 +3,17 @@ services:
     image: __FPK_IMAGE__:__FPK_IMAGE_TAG__
     container_name: rainbow
     restart: unless-stopped
+    # v0.2.6：manifest service_port=0 后 fnOS 注入的 TRIM_SERVICE_PORT 不再可靠
+    # （很可能为 0 或缺失），端口固定字面量映射 23330：宿主 LAN 直连入口
+    # http://<NAS_IP>:23330/ 保留；网关流量走 Unix Socket，不经本端口
     ports:
-      - "${TRIM_SERVICE_PORT}:${TRIM_SERVICE_PORT}"
+      - "23330:23330"
     environment:
       TZ: Asia/Shanghai
       RO_SERVER_HOST: 0.0.0.0
-      RO_SERVER_PORT: "${TRIM_SERVICE_PORT}"
+      # v0.2.6：同上，RO_SERVER_PORT 固定 23330（env 优先于 config.yaml，
+      # 向导已不再提供端口项，服务监听恒为 23330）
+      RO_SERVER_PORT: "23330"
       RO_DB_DIR: /app/data/db
       # 统一网关：服务监听该 Unix Socket，fnOS 校验用户会话后经 /app/com.rainbow.music 前缀转发
       # 并注入 X-Trim-Userid/X-Trim-Username/X-Trim-Isadmin 身份头（WebSocket 同前缀复用）

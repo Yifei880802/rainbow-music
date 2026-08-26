@@ -14,6 +14,8 @@ APP_NAME="com.rainbow.music"
 COMPOSE_PROJECT="rainbow-music"
 COMPOSE_FILE="${TRIM_APPDEST:-}/docker/docker-compose.yaml"
 CONFIG_FILE="${TRIM_PKGETC:-}/config.yaml"
+# v0.2.6：端口固定 23330（manifest service_port=0 + compose 字面量映射，向导已移除端口项），
+# DEFAULT_PORT 兼任渲染兜底与 read_port/probe_status 回落值
 DEFAULT_PORT="23330"
 
 # ---------- 通用工具 ----------

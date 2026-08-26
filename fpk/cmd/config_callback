@@ -15,6 +15,9 @@ source "$(cd "$(dirname "$0")" && pwd)/_common"
 
 [ -f "$CONFIG_FILE" ] || render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
 changed=0
+# v0.2.6：向导已移除端口项（服务监听由 compose 字面量 RO_SERVER_PORT=23330 固定，
+# env 优先于 config.yaml）；本分支为兼容保留——若 fnOS 带旧字段重跑回调，仍只改
+# config.yaml 值且空值安全跳过，不影响实际监听端口
 if [ -n "${wizard_port:-}" ]; then
     case "$wizard_port" in
         *[!0-9]*|'') log_error "端口必须是数字：$wizard_port" ;;
