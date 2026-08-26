@@ -1,4 +1,4 @@
-# Rainbow fnOS 部署指南（v0.2.5）
+# Rainbow fnOS 部署指南（v0.2.6）
 
 面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
@@ -9,6 +9,7 @@
 - [版本要求](#版本要求)
 - [双模式：local（端口直连）与 gateway（FN ID 网关）](#双模式local端口直连与-gatewayfn-id-网关)
 - [v0.2.5 网关链路修复：micro_app、前缀转发与单入口](#v025-网关链路修复micro_app前缀转发与单入口)
+- [v0.2.6 网关就绪修复：service_port=0 与 checkport=false](#v026-网关就绪修复service_port0-与-checkportfalse)
 - [安装向导：「音乐库扫描目录」配置与挂载机制](#安装向导音乐库扫描目录配置与挂载机制)
 - [X-Trim-* 身份头安全模型](#x-trim--身份头安全模型)
 - [错误码与降级行为](#错误码与降级行为)
@@ -73,6 +74,34 @@ v0.2.4 桌面双图标中 url 型入口（fnOS 注册库端口 23331 vs 实际 2
 ### ⚠️ 卸载会清空应用数据目录（真机实测）
 
 fnOS **卸载**应用会清空其应用数据目录（前身应用 ro-music 的 187 任务/5 歌单随卸载消失，见 #88 换基准记录）。**重装/换装前必须备份**：`@appdata/com.rainbow.music`（下载文件 / 音源 / SQLite）与 `@appconf/com.rainbow.music`（config.yaml / scan-dirs.conf）。升级（update/task）不经过卸载、数据保留；仅「卸载」操作触发清空。
+
+### #95 实测回填：卸载重装 v0.2.5 与网关 404 根因闭环（2026-08-26）
+
+**卸载重装全链 PASS（数据零丢失）**：备份（`rainbow-backup-20260826/`）→ uninstall → install/task（packageType=local + isManualInstall + volumeId=2，向导 port=23330/admin 密码/扫描目录空）→ 停容器恢复 ro.db 三件套+config.yaml+scan-dirs.conf（size 逐项对账全对）→ 启容器 healthy → db 10 表与备份基线一致；admin 凭据 TCP 直连登录 200+session、伪造 X-Trim-* 头调 gateway-login 得 404（防伪造红线生效）；app.sock 属主 uid=975 gid=969（TRIM_RUN_UID/GID chown 生效）；桌面单图标恢复、点击开窗正常。
+
+**网关 URL 仍 404：checkport 健康检查恒失败（fnOS 平台行为，文档空白点）**。完整因果链（多组对照实验实证）：
+
+1. **根因**：manifest `checkport=true` 触发 fnOS 端口健康检查，但 fnOS 对 micro_app 应用**不向 localhost 发布容器端口**（实测 `127.0.0.1:23330` ECONNREFUSED、仅 docker0 网桥 `172.17.0.1:23330` 可达）→ 健康检查恒失败 → 应用被判「未就绪」→ 网关路由禁用（带有效会话请求 `/app/com.rainbow.music/*` 返回 404「Not Found」9B）+ 桌面无图标 + 应用中心「启用」态；
+2. **对照证据**：fygo（正常微应用）manifest 为 `service_port=0` + `checkport=false`，其网关 URL 带会话 200 正常转发；
+3. **转发从未发生（铁证）**：用回显 socket 替换 app.sock 后，带有效会话的网关请求**零命中**——404 由 fnOS 网关层直接产生，非应用响应；应用侧完全正常（socket 直连同路径 200 JSON，`mode:"gateway"`）；
+4. **manifest 文件热改无效**：真机改 `/var/apps/<app>/manifest`（0/false）后，容器重启（dockermgr stop/start）、应用级 start（app-center start/start）、等待周期任务均不触发 fnOS 重新评估——**manifest 仅在安装时读取并缓存，修复必须进 fpk 包重新安装**（与 micro_app 注册同一教训）；
+5. **应用级 stop 异常**：app-center stop/restart 报 `invalid proto`（APP_STOP_FAILED_DOCKER_COMPOSE_EXCEPTION），不阻塞容器层操作，但使「stop→start 重评估」路径不可用；
+6. **APP_CRASH 事件链**：安装后 dockermgr containerStop（如数据恢复流程）会被 app-center 记为 APP_CRASH 并使应用退回「未就绪」态；调 app-center start/start（幂等）可恢复 STARTED（桌面图标随之恢复）。
+
+**v0.2.6 修复方向**：fpk 源 `manifest` 改 `service_port=0` + `checkport=false`（对齐 fygo 形态）后重新打包发布；可选增强 TCP 实例前缀兼容（rewriteUrl 幂等剥前缀）作双保险。当前 v0.2.5 网关入口不可用属包缺陷，TCP 直连 `http://<NAS_IP>:23330/` 不受影响。
+
+## v0.2.6 网关就绪修复：service_port=0 与 checkport=false
+
+接续上节 #95 实测回填：v0.2.5 修复了 micro_app 网关注册，但真机终验网关 URL 仍 404——**根因是 manifest `checkport=true` 触发 fnOS 端口健康检查，而 fnOS 对网关型（micro_app）应用不向宿主 localhost 发布容器端口（仅 docker0 网桥可达）→ 健康检查恒失败 → 应用被判「未就绪」→ 网关路由被禁用**。同机对照 fygo（`service_port=0` + `checkport=false`）网关 200 正常；manifest 热改不会被 fnOS 重新评估，修复必须进 fpk 包。
+
+修复内容（对齐官方网关应用形态）：
+
+- **manifest**：`service_port=23330` → `service_port=0`、`checkport=true` → `checkport=false`（micro_app、桌面 Gateway 入口等其余字段不动）；
+- **compose**：`service_port=0` 后 fnOS 注入的 `TRIM_SERVICE_PORT` 不再可靠（可能为 0 或缺失），端口映射与 `RO_SERVER_PORT` 全部改字面量 `23330`——**TCP 直连入口 `http://<NAS_IP>:23330/` 完全不变**（LAN 直连、admin 账密登录照旧）；
+- **向导**：安装/配置向导移除「服务端口」字段——服务监听由 compose 字面量 `RO_SERVER_PORT=23330` 固定（env 优先于 config.yaml，见 `server/src/core/config.ts`），端口不再可配；生命周期脚本的端口渲染/探测统一兜底 `DEFAULT_PORT=23330`（向导空值路径安全）；
+- FN ID 网关免密入口与 TCP 直连两入口并存语义不变（网关前缀、X-Trim-* 信任模型均不动）。
+
+> 升级注意：manifest 仅在安装时被 fnOS 读取并缓存（两次真机教训均为「热改 manifest 不生效」），本修复需随 fpk 包经安装/升级（update/task）流程生效。
 
 ## 安装向导：「音乐库扫描目录」配置与挂载机制
 

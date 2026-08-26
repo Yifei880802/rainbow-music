@@ -4,10 +4,10 @@
 #
 # 用法：
 #   ./scripts/verify-image.sh [镜像名] [宿主端口]
-#   IMAGE=rainbow-music:v0.2.5 PORT=23332 ./scripts/verify-image.sh   # 环境变量等价
+#   IMAGE=rainbow-music:v0.2.6 PORT=23332 ./scripts/verify-image.sh   # 环境变量等价
 #
 # 参数：
-#   $1 / IMAGE  镜像名，默认 rainbow-music:v0.2.5
+#   $1 / IMAGE  镜像名，默认 rainbow-music:v0.2.6
 #   $2 / PORT   宿主映射端口，默认 23331（23330 为常驻开发服务，勿占用）
 #
 # 环境变量：
@@ -30,7 +30,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-IMAGE="${1:-${IMAGE:-rainbow-music:v0.2.5}}"
+IMAGE="${1:-${IMAGE:-rainbow-music:v0.2.6}}"
 PORT="${2:-${PORT:-23331}}"
 RB_USER="${RB_USER:-admin}"
 RB_PASS="${RB_PASS:-admin}"
