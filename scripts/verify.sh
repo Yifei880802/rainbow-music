@@ -80,6 +80,9 @@ if step "冒烟 GET /api/v1/health/smoke" "$SMOKE_CODE"; then :; else FAILED=1; 
 
 # 4) 网关 socket 冒烟（v0.2.1）：RO_GATEWAY_SOCK 环境变量存在且指向 unix socket
 #    时，带模拟 X-Trim-* 头调 gateway-login（网关实例才注册该路由，预期 200）。
+#    v0.2.5 增测前缀重写：经 /app/com.rainbow.music 前缀请求 auth/status（rewriteUrl
+#    应在路由查找前剥前缀，预期 200）——fnOS 网关按官方语义保留完整前缀转发，
+#    应用侧不剥前缀则 iframe 入口全部 404（v0.2.4 入口 404 根因链之一）。
 #    本地开发机/纯端口部署无此环境变量 → SKIP（不计失败，属预期降级）。
 if [ -n "${RO_GATEWAY_SOCK:-}" ]; then
     if [ -S "$RO_GATEWAY_SOCK" ]; then
@@ -91,6 +94,13 @@ if [ -n "${RO_GATEWAY_SOCK:-}" ]; then
             "http://localhost/api/v1/auth/gateway-login" 2>/dev/null || true)
         [ -n "$GW_CODE" ] || GW_CODE=000
         if step "网关登录 POST /api/v1/auth/gateway-login @ $RO_GATEWAY_SOCK" "$GW_CODE"; then :; else FAILED=1; fi
+
+        # 前缀重写（v0.2.5）：带网关前缀的请求应剥前缀后命中同一路由
+        GWP_CODE=$(curl -s -o /dev/null -m 10 --unix-socket "$RO_GATEWAY_SOCK" \
+            -w '%{http_code}' \
+            "http://localhost/app/com.rainbow.music/api/v1/auth/status" 2>/dev/null || true)
+        [ -n "$GWP_CODE" ] || GWP_CODE=000
+        if step "网关前缀 GET /app/com.rainbow.music/api/v1/auth/status @ $RO_GATEWAY_SOCK" "$GWP_CODE"; then :; else FAILED=1; fi
     else
         echo "SKIP: 网关冒烟 —— RO_GATEWAY_SOCK 已设置但 socket 不存在: $RO_GATEWAY_SOCK"
     fi
