@@ -115,17 +115,24 @@ X-Trim-Isadmin: true|false # 是否 fnOS 管理员
 
 ## 真机验证 checklist
 
-真机升级安装沿用 #81 已验证的 trim-cli 通道；下列验证点对应发布计划模块七第 4 节（真机执行由后续任务 #88 完成，本清单为其基线）：
+真机升级安装沿用 #81 已验证的 trim-cli 通道；下列验证点对应发布计划模块七第 4 节。
+**#88 实测回填（2026-08-26，NAS：飞牛 TRIM ME mini，升级链路 v0.2.1→0.2.2→0.2.3→0.2.4，最终安装 v0.2.4）**：
 
-- [ ] **网关入口出现**：fnOS 桌面/应用列表出现 Rainbow 图标（网关前缀 `/app/com.rainbow.music` 生效）；
-- [ ] **FN ID 免密进入**：fnOS 已登录用户点图标直达主界面，登录页出现「已通过 FN ID 登录为 <用户名>」；远程（FN ID 外网）访问同样免密；
-- [ ] **扫描目录出库播放**：向导填入的 NAS 音乐目录可在「NAS 音乐」页勾选 → 扫描出曲目 → 行点击播放（Range 流式）有声、封面正常；
-- [ ] **双账号数据隔离**：两个 fnOS 用户先后进入，各自的歌单/播放历史/收藏/NAS 曲库互不可见；
-- [ ] **权限边界**：普通成员打开设置页可读，改配置/触发冒烟返回 403 提示；fnOS 管理员可正常操作；
-- [ ] **TCP 直连回归**：`http://<NAS_IP>:23330/` 仍可 admin 账密登录，老书签/脚本不受影响；
-- [ ] **v0.2.0 存量数据完整**：升级前已有的下载任务记录、歌单、音源脚本、`config.yaml` 全部保留；老歌单对 admin（legacy 归属）全部可见；
-- [ ] **老 fnOS 回落**（如可找低版本环境）：无网关入口时纯端口模式正常。
+- [x] **网关入口出现**（PASS，API 侧）：实测 `@appcenter/com.rainbow.music/ui/config` 含双入口注册——`com.rainbow.music.Application`（URL 直连，port=wizard_port，allUsers:false）与 `com.rainbow.music.Gateway`（iframe，gatewayPrefix=`/app/com.rainbow.music`，gatewaySocket=`rainbow.sock`，allUsers:true）；桌面图标展示效果留用户浏览器确认；
+- [ ] **FN ID 免密进入**（SKIP，留用户）：Mac 侧无法经 fnOS 网关模拟 FN ID 登录（CF Tunnel 拓扑限制）。用户验证指引：飞牛桌面打开 Rainbow 图标应免密直入主界面且顶栏显示飞牛账号名；
+- [x] **扫描目录出库播放**（PASS，API 侧全链）：容器内经 unix socket 实测 `GET /me/scan-roots`（available 含 `/app/data/downloads`）→ `PUT` 选中 → `POST /library/scan` 202 → 轮询 done（total=2/added=2）→ `GET /library/tracks` 返回 2 条（title/ext=wav）→ `GET /library/tracks/:id/stream` 带 Range 返回 **206**（`bytes 0-1023/48044`，Content-Type=audio/wav）与全量 200（48044B）；有声播放留用户浏览器确认；
+- [x] **双账号数据隔离**（PASS，API 侧）：经 socket 假 `X-Trim-Userid/Username/Isadmin` 头调 `gateway-login`（模拟 fnOS 网关注入行为），alice(1001)/bob(1002) 各得 session；歌单互写互读互不可见（t88-alice-pl 与 t88-bob-pl 各自可见己方）；播放历史同样互不可见；
+- [x] **权限边界**（PASS）：非 admin（bob）`PATCH /api/v1/settings` → **403**（`{"error":"需要管理员权限"}`）；
+- [x] **TCP 直连回归**（PASS）：`http://<NAS_IP>:23330/` admin 账密登录 200 + Set-Cookie；**安全红线**：TCP 直连带伪造 `X-Trim-*` 头调 `gateway-login` → **404**（该路由只在 socket 实例注册，防伪造生效）；
+- [x] **v0.2.0 存量数据完整**（PASS，换基准）：原「187 任务/5 歌单」基准经查**属已卸载的前身应用 ro-music**（非 com.rainbow.music 的 TRIM_PKGVAR；`@appdata/com.rainbow.music` 目录 btim=2026-08-25 15:44 即 #81 v0.2.0 全新安装时新建，前身数据随其卸载清空）。实测改为**行级数据跨升级保留**：升级前写入 users×2 / playlists×2 / play_history×2 / user_scan_roots×1 → 重放 v0.2.4 升级 → 全部行完整保留；ro.db 文件本体跨 0.2.2→0.2.3→0.2.4（含重放）四次升级保留；config.yaml 保留；scan-dirs.conf 经 v0.2.4 修复后跨升级保留（见下「实测发现」）；
+- [ ] **老 fnOS 回落**（SKIP）：无低版本 fnOS 环境可测；降级逻辑（compose 未注入 `RO_GATEWAY_SOCK` 时回落纯端口模式）代码审查已覆盖，未真机实测。
+
+### #88 实测发现（fnOS 平台行为，2026-08-26）
+
+1. **fnOS 升级流程会带空 wizard 参数重跑 install_callback**：空参调用会走渲染函数的「写空」分支——v0.2.4 起 `render_scan_mounts` 改为空参不覆盖持久化（`fpk/cmd/_common`），只有向导显式给非空值才写入；全新安装空值与升级重跑空参都回落回读/默认，行为安全；
+2. **fnOS compose up 采用内部保存的模板，不读宿主渲染文件**：生命周期脚本渲染到 `@appcenter` 的 compose 挂载行（扫描目录 `/app/data/scan/N` 注入）**不会**被 fnOS 的 compose up 采用（对照实验：手改宿主 compose 的 `mem_limit` 后完整 stop/start，容器 Memory 与 CID 均不变）——「扫描目录挂载渲染」机制在真机不生效，属**架构级遗留**，需改用 fnOS 原生向导目录参数（参考 moviepilot 的用户目录挂载实现），已在发布计划外单列；
+3. **升级幂等性实测**：同一版本（0.2.3/0.2.4）重放 `update/task` 均正常 SUCCESS，生命周期回调幂等，无重复副作用。
 
 ---
 
-> 本文档的真机部分（checklist 执行结果、apiscope 契约实测校准）由后续任务 #88 补充；当前实现中 `core/fnos/trimapp.ts` 为 env 门控预留件，接口路径按官方约定实现，真机联调时校准。
+> 本文档的真机部分（checklist 执行结果）已由任务 #88 于 2026-08-26 回填（见上）；`core/fnos/trimapp.ts` 仍为 env 门控预留件，apiscope 契约真机联调留待后续。遗留：扫描目录挂载渲染机制因 fnOS compose 行为不生效（见「#88 实测发现」第 2 条），需改用 fnOS 原生向导目录参数实现；FN ID 浏览器全链与有声播放留用户侧确认。
