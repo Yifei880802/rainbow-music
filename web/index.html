@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Rainbow Music 彩虹音乐 — 跨平台聚合搜索、无损音乐下载与本地曲库管理" />
   <title>Rainbow Music · 彩虹音乐</title>
-  <link rel="icon" type="image/png" href="/favicon.png" />
-  <link rel="stylesheet" href="/style.css" />
+  <!-- v0.2.5 网关适配：资源引用改相对路径——iframe 前缀入口下基于
+       /app/com.rainbow.music/ 解析出带前缀 URL，直连下基于 / 解析，两态通吃 -->
+  <link rel="icon" type="image/png" href="favicon.png" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div class="app">
@@ -503,6 +505,6 @@
 
   <div id="toast" class="toast" hidden></div>
 
-  <script type="module" src="/js/main.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>

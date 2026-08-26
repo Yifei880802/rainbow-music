@@ -18,7 +18,7 @@
  * ≤900px 触屏隐藏手柄（触屏拖拽后续迭代）。
  */
 import { $, $$, escapeHtml, toast, PLATFORM_NAME, confirmModal } from '../ui.js'
-import { api } from '../api.js'
+import { api, API_BASE } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
 
@@ -147,7 +147,8 @@ async function renderPlaylists(pls) {
       const tid = t && isDone(t) ? t.id : ''
       const img = it.musicInfo?.img
       const pic = typeof img === 'string' && /^https?:\/\//i.test(img) ? img : ''
-      const src = tid ? `/api/v1/cover/${encodeURIComponent(tid)}` : pic
+      // v0.2.5：封面接口地址经 API_BASE 拼网关前缀（iframe 入口下可达）
+      const src = tid ? `${API_BASE}/api/v1/cover/${encodeURIComponent(tid)}` : pic
       if (src && !srcs.includes(src)) srcs.push(src)
       if (srcs.length >= 4) break
     }
@@ -228,7 +229,7 @@ async function openPlaylist(id) {
           const taskId = isDone(t) ? t.id : ''
           const img = it.musicInfo?.img
           const pic = typeof img === 'string' && /^https?:\/\//i.test(img) ? img : ''
-          const coverSrc = taskId ? `/api/v1/cover/${encodeURIComponent(taskId)}` : pic
+          const coverSrc = taskId ? `${API_BASE}/api/v1/cover/${encodeURIComponent(taskId)}` : pic
           return `
       <tr data-item="${escapeHtml(String(it.id))}" data-key="${escapeHtml(plItemKey(it))}"${isDone(t) ? ' title="已下载 · 点击播放"' : ''}>
         <td class="pd-drag"><span class="pd-handle" title="拖拽调整顺序" aria-hidden="true"><svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M2 3h8M2 6h8M2 9h8"/></svg></span></td>

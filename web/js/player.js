@@ -7,7 +7,7 @@
  *   派发 recent:changed 事件供侧边栏快捷入口（main.js）重渲染
  */
 import { $, toast, escapeHtml } from './ui.js'
-import { api } from './api.js'
+import { api, API_BASE } from './api.js'
 import { store } from './storage.js'
 
 let audio = null
@@ -95,7 +95,8 @@ function reportHistory(task) {
     playedAt: now,
   }
   if (task.kind === 'nas') track.trackId = String(task.id).replace(/^nas:/, '')
-  fetch('/api/v1/me/history', {
+  // v0.2.5：原生 fetch 同样经 API_BASE 拼网关前缀（iframe 入口下可达）
+  fetch(API_BASE + '/api/v1/me/history', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
@@ -265,8 +266,8 @@ function loadAt(i, autoplay = true) {
   syncProgress()
   syncNav()
   // v0.2.1 模块六：NAS 曲目携带自定义 stream 地址（library/tracks/:id/stream），
-  // 本地任务维持既有 /api/v1/play/:taskId 端点（契约不变）
-  audio.src = task.playUrl || `/api/v1/play/${encodeURIComponent(task.id)}`
+  // 本地任务维持既有 /api/v1/play/:taskId 端点（契约不变）；v0.2.5 经 API_BASE 拼网关前缀
+  audio.src = task.playUrl || `${API_BASE}/api/v1/play/${encodeURIComponent(task.id)}`
   if (autoplay) {
     audio.play().catch(() => {
       /* 非用户手势等播放失败，静默；error 事件会提示 */
@@ -275,11 +276,11 @@ function loadAt(i, autoplay = true) {
 }
 
 /** 播放栏封面：NAS 曲目用 library cover 端点，本地任务用 /api/v1/cover/:taskId；
- *  成功盖上唱片位，失败回退装饰位 */
+ *  成功盖上唱片位，失败回退装饰位（v0.2.5 经 API_BASE 拼网关前缀） */
 function syncCover(task) {
   if (!els.cover) return
   els.cover.hidden = true // 先复位，load 事件再展示（避免上一首封面残影）
-  els.cover.src = task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`
+  els.cover.src = task.coverUrl || `${API_BASE}/api/v1/cover/${encodeURIComponent(task.id)}`
 }
 
 /* ============================================================
@@ -395,7 +396,7 @@ function renderNpQueue() {
         ${cur ? '<span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span>' : `<span class="np-item-num">${i + 1}</span>`}
         <span class="np-item-cover" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="13" height="13"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
-          <img src="${escapeHtml(t.coverUrl || `/api/v1/cover/${encodeURIComponent(t.id)}`)}" alt="" loading="lazy" onerror="this.remove()" />
+          <img src="${escapeHtml(t.coverUrl || `${API_BASE}/api/v1/cover/${encodeURIComponent(t.id)}`)}" alt="" loading="lazy" onerror="this.remove()" />
         </span>
         <span class="np-item-meta"><b>${escapeHtml(m.name)}</b><small>${escapeHtml(m.singer)}</small></span>
       </button>`
@@ -409,7 +410,7 @@ function syncNp(task) {
   if (els.npArtist) els.npArtist.textContent = els.artist.textContent || '未知艺术家'
   if (els.npCover) {
     els.npCover.hidden = true
-    els.npCover.src = task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`
+    els.npCover.src = task.coverUrl || `${API_BASE}/api/v1/cover/${encodeURIComponent(task.id)}`
   }
   renderNpQueue()
 }
@@ -770,7 +771,7 @@ function syncMediaSession(task) {
       title: m.name,
       artist: m.singer,
       album: task.album || '',
-      artwork: [{ src: task.coverUrl || `/api/v1/cover/${encodeURIComponent(task.id)}`, sizes: '512x512' }],
+      artwork: [{ src: task.coverUrl || `${API_BASE}/api/v1/cover/${encodeURIComponent(task.id)}`, sizes: '512x512' }],
     })
   } catch {
     /* MediaMetadata 不可用（旧浏览器）：静默降级 */

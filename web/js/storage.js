@@ -36,11 +36,14 @@ export function currentUser() {
  * - 401/网络失败/超时（3s 防御）/响应异常 → uid=null 回落旧无前缀键
  * - 原生 fetch 而非 api.js：避免 401 时 request() 的登录页跳转副作用
  *   （未登录访问 index.html 的跳转由其他 api 调用按既有路径完成）
+ * - v0.2.5：URL 经 API_BASE 拼接网关前缀（iframe 入口下同源可达）
  */
+import { API_BASE } from './api.js'
+
 export async function initUid() {
   try {
     const resp = await Promise.race([
-      fetch('/api/v1/me', { credentials: 'same-origin' }),
+      fetch(API_BASE + '/api/v1/me', { credentials: 'same-origin' }),
       new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
     ])
     if (!resp.ok) return null // 401/404/5xx：回落旧键（未登录或后端为 v0.2.0）

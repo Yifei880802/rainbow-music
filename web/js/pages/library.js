@@ -23,7 +23,7 @@
  *   筛选 chips 计数随维度/drill 联动重算；SSE 刷新自动重算聚合。
  */
 import { $, $$, escapeHtml, toast, statusLabel, PLATFORM_NAME, confirmModal, formatBytes } from '../ui.js'
-import { api } from '../api.js'
+import { api, API_BASE } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
 import { store } from '../storage.js'
@@ -242,9 +242,10 @@ function buildAggs(dim) {
   return arr
 }
 
-/** 聚合卡封面 onerror：依次回退组内下一个任务封面，全失败移除露出渐变位 */
+/** 聚合卡封面 onerror：依次回退组内下一个任务封面，全失败移除露出渐变位
+ *  （v0.2.5：内联处理器无法引用模块变量，改为定义时内插 API_BASE 网关前缀） */
 const AGG_COVER_ERR =
-  "const i=this,cs=(i.dataset.cands||'').split(',').filter(Boolean);const n=+i.dataset.ci+1;if(n<cs.length){i.dataset.ci=n;i.src='/api/v1/cover/'+encodeURIComponent(cs[n])}else i.remove()"
+  `const i=this,cs=(i.dataset.cands||'').split(',').filter(Boolean);const n=+i.dataset.ci+1;if(n<cs.length){i.dataset.ci=n;i.src='${API_BASE}/api/v1/cover/'+encodeURIComponent(cs[n])}else i.remove()`
 
 /** 艺人头像首字（中英文均可；空串安全） */
 const aggInitial = (label) => Array.from(label || '?')[0] || '?'
@@ -266,10 +267,10 @@ function renderAggGrid() {
         ? `${g.count} 首${g.subCount ? ` · ${g.subCount} 张专辑` : ''}`
         : `${g.subCount ? [...g.subSeen][0] + ' · ' : ''}${g.count} 首`
       const cover = isArtist
-        ? `<span class="agg-avatar" aria-hidden="true"><b>${escapeHtml(aggInitial(g.label))}</b><img src="/api/v1/cover/${first}" data-cands="${escapeHtml(cands)}" data-ci="0" alt="" loading="lazy" onerror="${AGG_COVER_ERR}" /></span>`
+        ? `<span class="agg-avatar" aria-hidden="true"><b>${escapeHtml(aggInitial(g.label))}</b><img src="${API_BASE}/api/v1/cover/${first}" data-cands="${escapeHtml(cands)}" data-ci="0" alt="" loading="lazy" onerror="${AGG_COVER_ERR}" /></span>`
         : `<span class="agg-cover" aria-hidden="true">
             <svg class="agg-note" viewBox="0 0 24 24" width="42" height="42"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
-            <img src="/api/v1/cover/${first}" data-cands="${escapeHtml(cands)}" data-ci="0" alt="" loading="lazy" onerror="${AGG_COVER_ERR}" />
+            <img src="${API_BASE}/api/v1/cover/${first}" data-cands="${escapeHtml(cands)}" data-ci="0" alt="" loading="lazy" onerror="${AGG_COVER_ERR}" />
           </span>`
       return `
         <button class="lib-agg-card${g.unknown ? ' unknown' : ''}" role="listitem" type="button" data-dim="${libDim}" data-key="${escapeHtml(g.key)}" title="查看${isArtist ? '艺人' : '专辑'}：${escapeHtml(g.label)}">
@@ -751,7 +752,7 @@ function render() {
         return `
       <div class="song-row" role="listitem" data-id="${escapeHtml(t.id)}" tabindex="0" title="${escapeHtml(songRowTitle(t))}">
         <div class="song-cover" aria-hidden="true">
-          <img class="cover-img" src="/api/v1/cover/${encodeURIComponent(t.id)}" alt="" loading="lazy" onerror="this.remove()" />
+          <img class="cover-img" src="${API_BASE}/api/v1/cover/${encodeURIComponent(t.id)}" alt="" loading="lazy" onerror="this.remove()" />
           <svg class="song-note" viewBox="0 0 24 24" width="18" height="18"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
           <span class="song-eq" aria-hidden="true"><i></i><i></i><i></i></span>
           <button class="song-play" data-act="play" data-id="${escapeHtml(t.id)}" type="button" aria-label="播放 ${escapeHtml(name)}">
@@ -1012,8 +1013,9 @@ function nasTrackToPlayer(t) {
     singer: t.artist || '',
     album: t.album || '',
     platform: 'nas',
-    playUrl: `/api/v1/library/tracks/${encodeURIComponent(tid)}/stream`,
-    coverUrl: `/api/v1/library/tracks/${encodeURIComponent(tid)}/cover`,
+    // v0.2.5：stream/cover 地址经 API_BASE 拼网关前缀（iframe 入口下可达）
+    playUrl: `${API_BASE}/api/v1/library/tracks/${encodeURIComponent(tid)}/stream`,
+    coverUrl: `${API_BASE}/api/v1/library/tracks/${encodeURIComponent(tid)}/cover`,
   }
 }
 
@@ -1274,7 +1276,7 @@ function nasRowHtml(t) {
   return `
   <div class="nas-row" role="listitem" data-id="${escapeHtml(pid)}" tabindex="0" title="点击播放">
     <div class="nas-cover" aria-hidden="true">
-      <img src="/api/v1/library/tracks/${encodeURIComponent(tid)}/cover" alt="" loading="lazy" onerror="this.remove()" />
+      <img src="${API_BASE}/api/v1/library/tracks/${encodeURIComponent(tid)}/cover" alt="" loading="lazy" onerror="this.remove()" />
       <svg class="nas-note" viewBox="0 0 24 24" width="17" height="17"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
       <span class="nas-eq" aria-hidden="true"><i></i><i></i><i></i></span>
       <button class="nas-play" type="button" aria-label="播放 ${escapeHtml(t.title || '这首 NAS 曲目')}">

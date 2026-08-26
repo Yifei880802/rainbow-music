@@ -2,12 +2,20 @@
 
 const $ = (s) => document.querySelector(s)
 
+// v0.2.5 网关前缀探测（与 js/api.js 的 API_BASE 同源逻辑；本文件为非模块脚本，
+// 无法 import，故内联）。iframe 入口在 /app/com.rainbow.music 前缀下，接口与
+// 页内跳转均需拼接；直连入口（根路径）时空串，行为与旧版一致。
+var API_BASE = (function () {
+  var p = location.pathname
+  return p === '/app/com.rainbow.music' || p.indexOf('/app/com.rainbow.music/') === 0 ? '/app/com.rainbow.music' : ''
+})()
+
 // 已登录则直接跳首页；未配密码则提示；
 // v0.2.1 模块六：网关模式（飞牛 FN ID）→ 账密表单替换为身份直达卡
 async function init() {
   try {
-    const r = await fetch('/api/v1/auth/status').then((x) => x.json())
-    if (r.authenticated) { location.href = '/'; return }
+    const r = await fetch(API_BASE + '/api/v1/auth/status').then((x) => x.json())
+    if (r.authenticated) { location.href = 'index.html'; return }
     // 模块六：网关实例——身份由飞牛 NAS 网关注入，不走账密
     if (r.mode === 'gateway') {
       showGateway(r.user || null)
@@ -46,10 +54,10 @@ function showGateway(user) {
         btn.disabled = true
         btn.textContent = '正在进入…'
         try {
-          const resp = await fetch('/api/v1/auth/gateway-login', { method: 'POST' })
+          const resp = await fetch(API_BASE + '/api/v1/auth/gateway-login', { method: 'POST' })
           const data = await resp.json().catch(() => ({}))
           if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
-          location.href = '/'
+          location.href = 'index.html'
         } catch (e) {
           btn.disabled = false
           btn.textContent = '进入 Rainbow'
@@ -71,14 +79,14 @@ $('#login-form').addEventListener('submit', async (e) => {
   err.hidden = true
   $('#login-btn').disabled = true
   try {
-    const resp = await fetch('/api/v1/auth/login', {
+    const resp = await fetch(API_BASE + '/api/v1/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`)
-    location.href = '/'
+    location.href = 'index.html'
   } catch (e2) {
     err.hidden = false
     err.textContent = e2.message

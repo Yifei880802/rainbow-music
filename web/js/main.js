@@ -3,7 +3,7 @@
  * 各页面拆为独立 ES 模块（pages/*.js），按需懒初始化
  */
 import { $, $$, escapeHtml, toast } from './ui.js'
-import { api } from './api.js'
+import { api, API_BASE } from './api.js'
 import { store, initUid, currentUser, resetUid } from './storage.js'
 import * as searchPage from './pages/search.js'
 import * as homePage from './pages/home.js'
@@ -188,7 +188,7 @@ async function initAuth() {
           /* ignore */
         }
         resetUid() // 模块六：清内存身份，下个会话重新探测 uid
-        location.href = '/login.html'
+        location.href = 'login.html'
       })
       // v0.2.1 模块六：顶栏用户徽章（uid 由 storage.initUid 缓存，免二次请求）
       setupUserBadge()
@@ -244,14 +244,15 @@ function setupUserBadge() {
       /* ignore */
     }
     resetUid()
-    location.href = '/login.html'
+    location.href = 'login.html'
   })
 }
 
 // ---------- 最近播放（player.js 写 localStorage，这里渲染侧边栏快捷入口） ----------
-/** 封面地址：NAS 曲目走 library cover 端点，本地任务走既有 cover 端点 */
+/** 封面地址：NAS 曲目走 library cover 端点，本地任务走既有 cover 端点
+ *  （v0.2.5：经 API_BASE 拼接网关前缀，iframe 入口下可达） */
 const recentCoverOf = (it) =>
-  it && it.kind === 'nas' && it.coverUrl ? it.coverUrl : `/api/v1/cover/${encodeURIComponent(it.id)}`
+  it && it.kind === 'nas' && it.coverUrl ? it.coverUrl : `${API_BASE}/api/v1/cover/${encodeURIComponent(it.id)}`
 
 function renderRecent() {
   const list = player.recentList()

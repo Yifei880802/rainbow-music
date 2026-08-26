@@ -2,12 +2,23 @@
  * Rainbow REST API 封装（浏览器端）
  *
  * - 全部走 /api/v1/*（契约见仓库 API.md，不臆造端点）
+ * - v0.2.5 网关适配：fnOS iframe 入口在 /app/com.rainbow.music 前缀下，所有接口
+ *   调用经 API_BASE 拼接前缀（服务端 rewriteUrl 会剥前缀，两态——网关前缀/直连根——
+ *   均命中同一批路由）；API_BASE 是全前端唯一的前缀来源（sse.js/storage.js/各页面
+ *   模块拼封面/流地址均 import 本常量，login.js 为非模块脚本内联同源探测逻辑）
  * - 鉴权：同源请求自动携带会话 Cookie（HttpOnly ro_sess，登录后由服务端设置）；
  *   浏览器端不使用 API Key（那是给脚本/程序的方式）
- * - 收到 401 一律跳 /login.html 重新登录
+ * - 收到 401 一律跳 login.html（相对路径，网关/直连两态均可正确解析）重新登录
  */
 
-const BASE = '/api/v1'
+/** 网关前缀探测：仅在 fnOS 统一网关入口（iframe，pathname 带精确前缀）时非空。
+ *  严格匹配 前缀 或 前缀+'/'，防止误匹配其他 /app/* 应用路径 */
+export const API_BASE = (() => {
+  const p = location.pathname
+  return p === '/app/com.rainbow.music' || p.startsWith('/app/com.rainbow.music/') ? '/app/com.rainbow.music' : ''
+})()
+
+const BASE = API_BASE + '/api/v1'
 
 /** 把对象拼成 query string（忽略 undefined/null/空串） */
 function qs(params) {
@@ -28,7 +39,7 @@ async function request(path, opts = {}) {
     throw new Error('网络错误，无法连接服务: ' + (err && err.message ? err.message : err))
   }
   if (resp.status === 401) {
-    location.href = '/login.html'
+    location.href = 'login.html'
     throw new Error('未授权')
   }
   const data = await resp.json().catch(() => ({}))

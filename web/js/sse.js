@@ -8,9 +8,12 @@
  *   按 API.md 约定，业务侧应借此调 GET /api/v1/tasks 做一次全量对账，
  *   避免断线期间漏掉的事件
  * - 会话鉴权走同源 Cookie，EventSource 自动携带
+ * - v0.2.5：URL 经 api.js 的 API_BASE 拼接网关前缀（iframe 入口下同源可达）
  */
 
-const URL_PATH = '/api/v1/sse/subscribe'
+import { API_BASE } from './api.js'
+
+const URL_PATH = API_BASE + '/api/v1/sse/subscribe'
 const MAX_RETRY_DELAY = 15000
 
 /** 服务端可能推送的事件名（与 server/src/routes/sse.ts 保持一致） */
