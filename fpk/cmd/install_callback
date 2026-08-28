@@ -17,4 +17,8 @@ source "$(cd "$(dirname "$0")" && pwd)/_common"
 render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
 render_scan_mounts "${wizard_scan_dirs:-}"
 ensure_data_dirs
+# v0.2.9：网关 socket DB 幂等补写（fnOS 手动安装链不写 gateway 字段的根治项；
+# 函数内部全容错恒 return 0，set -e 安全；fnOS 可能稍后才写 app_service 行，
+# upgrade_callback 会再跑一次兜底）
+fix_gateway_socket
 exit 0

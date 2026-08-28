@@ -42,7 +42,8 @@ ENV NODE_ENV=production \
     TZ=Asia/Shanghai \
     RO_SERVER_HOST=0.0.0.0 \
     RO_SERVER_PORT=23330 \
-    RO_DB_DIR=/app/data/db
+    RO_DB_DIR=/app/data/db \
+    RO_BUNDLED_SOURCES=/app/data/sources-bundled
 
 WORKDIR /app/server
 
@@ -57,6 +58,12 @@ COPY web /app/web
 # 容器内 /app 布局对齐代码里的 ROOT_DIR(=server/../..)：
 #   /app/config.yaml  /app/data/{downloads,sources,ro.db}  /app/web
 # config.yaml 与 data/ 通过 volume 从宿主机映射进来（见 compose）
+# v0.2.9 音源自愈：内置音源副本打进镜像（仓库 data/sources 的 7 个 lx-music 脚本，
+# 只读副本；构建上下文经 .dockerignore 的 !data/sources 反排除放行）。
+# 服务启动时若挂载的 sources 目录无任何 .js 则从此 seeding（source-engine），
+# 绝不覆盖用户已有脚本——卸载重装清空 @appdata 后音源自恢复
+COPY data/sources /app/data/sources-bundled
+
 # 这里建目录占位，避免首次挂载前不存在
 RUN mkdir -p /app/data/downloads /app/data/sources /app/data/db
 

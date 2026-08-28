@@ -1,4 +1,4 @@
-# Rainbow fnOS 部署指南（v0.2.6）
+# Rainbow fnOS 部署指南（v0.2.9）
 
 面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
@@ -10,6 +10,8 @@
 - [双模式：local（端口直连）与 gateway（FN ID 网关）](#双模式local端口直连与-gatewayfn-id-网关)
 - [v0.2.5 网关链路修复：micro_app、前缀转发与单入口](#v025-网关链路修复micro_app前缀转发与单入口)
 - [v0.2.6 网关就绪修复：service_port=0 与 checkport=false](#v026-网关就绪修复service_port0-与-checkportfalse)
+- [v0.2.7/v0.2.8 网关 404 第三层根因：数据库 socket 字段为空与 DB 热修](#v027v028-网关-404-第三层根因数据库-socket-字段为空与-db-热修)
+- [2026-08-28 音源清空与下载目录断裂：根因与热修](#2026-08-28-音源清空与下载目录断裂根因与热修)
 - [安装向导：「音乐库扫描目录」配置与挂载机制](#安装向导音乐库扫描目录配置与挂载机制)
 - [X-Trim-* 身份头安全模型](#x-trim--身份头安全模型)
 - [错误码与降级行为](#错误码与降级行为)
@@ -103,6 +105,86 @@ fnOS **卸载**应用会清空其应用数据目录（前身应用 ro-music 的 
 
 > 升级注意：manifest 仅在安装时被 fnOS 读取并缓存（两次真机教训均为「热改 manifest 不生效」），本修复需随 fpk 包经安装/升级（update/task）流程生效。
 
+## v0.2.7/v0.2.8 网关 404 第三层根因：数据库 socket 字段为空与 DB 热修
+
+v0.2.6 修复 checkport 后，v0.2.7 补齐 `ui/config` 的 `microApp/gatewaySocket/gatewayPrefix` 字段、v0.2.8 将 entry key 后缀从 `.Gateway` 收敛为 `.Application`，真机重装后网关 URL 认证后仍 404「Not Found」（9B，Go 默认格式——请求已被网关接收但无上游可转发）。经多轮递进排查（2026-08-27~28，probe43~61），定位到**第三层根因：fnOS 安装时没有把 ui/config 的 socket 声明解析写入数据库**。
+
+### 数据流转链与根因
+
+```
+fpk 安装 → ui/config（含 gatewaySocket: "app.sock"）→ fnOS 解析写入 appcenter.app_service 表
+          → trim_sac 同步重建 trim_sac.entry 表 → trim_http_cgi sacentry 周期读 entry 注册上游
+```
+
+- **`appcenter` 库 `app_service` 表**（安装时刻写入）：rainbow 行（`service_name='com.rainbow.music.Application'`）的 `gateway_socket` / `gateway_prefix` 两列为**空**；对照 fygo 行有完整值（`/var/apps/fygo-browser/target/app.sock` + `/app/fygo-browser`）；
+- **`trim_sac` 库 `entry` 表**（同步重建视图）：rainbow 行（`app_name='com.rainbow.music'`）同样两列为空——每 30 分钟的 sacentry 周期因此**无 socket 可注册**（日志只见 fygo 的 `upstream register` 行）；
+- **ui/config 内容本身无误**：NAS 上 `@appcenter/com.rainbow.music/ui/config` 与 fygo 的逐字段等价（均含 `gatewaySocket/gatewayPrefix/microApp/type:iframe`，JSON 合法）——问题出在 fnOS 安装环节的解析，而非包内容；
+- **结构差异假设已实证推翻（probe60，2026-08-28）**：完整读出两份 ui/config 后确认 fygo 的服务键**同样**嵌套在顶层 `".url"` 包装层之下，与 rainbow 逐字段同构（仅缩进深度不同，JSON 语义无关）——包内配置结构不是根因；
+- **根因嫌疑收敛到安装渠道/应用形态（probe61，appcenter.app 表实证）**：rainbow 行 `manual_install=t / is_docker=t / is_systemd_uint=f / source_id=空`，fygo 行 `manual_install=f / is_docker=f / is_systemd_uint=t / source_id=307`——rainbow 为手动本地 fpk 安装的 Docker 形态应用，fygo 为商店渠道安装的 systemd 形态应用；两类安装链对 ui/config gateway 字段的解析写入行为不同（手动安装的 Docker 应用未写入 socket/prefix）。附：entry 中 socket 为逻辑路径，网关按 app 行 `install_volume_id` 解析到卷路径——实测宿主 socket 物理位于 `/vol2/@appcenter/com.rainbow.music/app.sock`（容器挂载 `@appcenter/com.rainbow.music → /app/target` + `RO_GATEWAY_SOCK=/app/target/app.sock` 产出；宿主 `/var/apps/<app>/target/` 不存在属正常现象，fygo 亦然）；
+- 网关认证层正常（未认证 200 `invalid token`；认证后 404 说明路由缺失而非鉴权问题）。
+
+### DB 热修（已在真机执行并验证，2026-08-27 20:31/20:42）
+
+fnOS 宿主 PG 可从诊断容器直连（挂载 `/usr /run` 只读 + 宿主 loader 运行真实 psql 二进制，容器 root 经 pg_ident `trim_root` map 以 peer 认证连 `postgres`）：
+
+```sql
+-- 库一：appcenter（源头表，安装时写入；重启后 entry 重建的数据来源）
+UPDATE app_service SET gateway_socket='/var/apps/com.rainbow.music/target/app.sock',
+  gateway_prefix='/app/com.rainbow.music', updated_at=now()
+WHERE service_name='com.rainbow.music.Application' AND coalesce(gateway_socket,'')='';
+
+-- 库二：trim_sac（网关注册视图；下一同步周期即生效）
+UPDATE entry SET gateway_socket='/var/apps/com.rainbow.music/target/app.sock',
+  gateway_prefix='/app/com.rainbow.music', updated_at=now()
+WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Application'
+  AND coalesce(gateway_socket,'')='';
+```
+
+**生效时机**：sacentry 周期任务每 30 分钟跑一次（trim_sac 服务启动后整点偏移，本机锚点 xx:00:58/xx:01:05）；DB 直改不触发即时注册，须等下一周期。本机实测：20:31 UPDATE entry → 20:42 UPDATE app_service → **21:01:05 周期注册成功**（syslog 出现 `upstream register app=com.rainbow.music ... var/apps/com.rainbow.music/target/app.sock`），随后认证请求 `GET /app/com.rainbow.music/` 200（31145B 应用 HTML）。
+
+### 终验结果（2026-08-27 21:01 ~ 08-28 10:30，连续运行 13h+）
+
+- [x] **网关路由打通**：认证后 `GET /app/com.rainbow.music/` → 200 text/html（应用首页）；
+- [x] **FN ID 身份贯通**：`GET /app/com.rainbow.music/api/v1/me` → `{"uid":"1000","username":"Giraffe","isAdmin":true,"mode":"gateway"}`（X-Trim-* 头注入正常）；
+- [x] **桌面图标 iframe 微应用窗口**：fnOS 桌面点 Rainbow 图标 → 1100×596 iframe（src=`/app/com.rainbow.music`）内完整加载主界面（发现/榜单/精选歌单/歌单详情/播放全部/下载全部按钮均在）；
+- [x] **应用数据正常**：直开应用 URL 同样 200，五平台榜单与精选歌单数据经网关拉取正常，用户 Giraffe 登录态正常；
+- [x] **稳定性**：注册后连续运行 13 小时以上网关仍 200（次日复测 API 正常；期间容器无重启）。
+
+### 已知限制与后续（v0.2.9 方向；网关 socket 补写已实施）
+
+1. **热修不随重装自愈（已于 v0.2.9 根治）**：卸载重装会重建 `app_service` 行（socket 字段大概率再次为空）——根因嫌疑已从 ui/config 结构（probe60 推翻）收敛到**安装渠道/应用形态**（probe61：`manual_install=t`+`is_docker=t` 的安装链未写入 gateway 字段）。v0.2.9 已实施原候选路径①：fpk 生命周期 `install_callback`/`upgrade_callback` 成功路径末尾内嵌 `fix_gateway_socket()`（`fpk/cmd/_common`），宿主 root 经 pg peer 认证直连 psql 幂等补写 app_service/entry 两表（仅空字段时 UPDATE，psql 不可达静默跳过不阻断安装/升级）——热修 SQL 随包自愈，重装/升级后等下一个 sacentry 周期（≤30 分钟）即注册。路径②（商店渠道形态重装实证 `source_id` 安装链）与③（向 fnOS 官方反馈手动安装 Docker 应用 gateway 字段缺失）留待后续；
+2. **重启持久性**：`app_service` 已补值，理论上 NAS 重启后 entry 重建会带回 socket（数据来源链），但**未做专项重启实测**（2026-08-27 夜间未发生重启，uptime 连续）；建议下次计划内重启时顺带复验网关 200；
+3. 排查方法论沉淀：PG 直连取证配方、`trim_sac` 同步周期锚点、`upstream register` 日志模式（注意实际日志为带空格的 `upstream register`，grep `upstream_register` 无匹配）见 `probe43~61` 系列脚本（本地 `.qa-tmp/t99/`；真机 `rainbow-diag/` 下的探针输出已于收尾时全部清理，结论均已回填本文档）。
+
+## 2026-08-28 音源清空与下载目录断裂：根因与热修
+
+用户报障：NAS 打开 Rainbow 页面「音源为空、功能不可用」。经 probe62~67 实证，为**两个叠加的结构性缺陷**（与网关无关，网关链路正常）：
+
+### 根因一：音源脚本随卸载重装丢失（镜像/fpk 均不内置）
+
+- lx-music 音源脚本（`data/sources/*.js`，共 7 个）**只存在于仓库本地**：镜像 Dockerfile 仅 `mkdir` 占位不 COPY，fpk 打包也不含；生产容器的 `/app/data/sources` 由 `${TRIM_PKGVAR}/data/sources` 挂载提供；
+- 首次真机导入的音源脚本存在宿主 `@appdata` 目录，但 v0.2.5 起多次**卸载重装**（#95/#98/#99）清空了 `@appdata`，重建的 sources 目录为空 → `sources.loaded=0/ready=0` → 搜索出结果但下载/播放/换源全部失败，音源页空白；
+- 排查实证：发现页榜单/歌单走平台直连适配器（`server/src/core/adapters/*`）不受影响，搜索 API 亦正常——死的是音源脚本链。
+
+### 根因二：download.dir 指向宿主绝对路径但容器从不挂载
+
+- `default_download_dir()` 把 `TRIM_DATA_SHARE_PATHS`（data-share 共享目录，如 `/vol2/@appshare/rainbow-music`）或 `${TRIM_PKGVAR}/downloads` 写进 config.yaml 的 `download.dir`；
+- 但 compose 模板只挂载 `${TRIM_PKGVAR}/data/downloads:/app/data/downloads`，**从不挂载 download.dir 指向的目录**；`server/src/core/download/index.ts` 对绝对路径直接 `mkdirSync(recursive)` → 下载文件写进**容器可写层**（宿主不可见、容器重建即丢）；
+- 热修实测验证：直接改宿主 compose 加字面挂载行无效——**fnOS 的 compose 解析器会剥离非 `${TRIM_*}` 变量形式的挂载**（与 #88 扫描目录挂载失效同机制）。
+
+### 热修记录（2026-08-28，已全部验证）
+
+1. **音源恢复**：本地 7 个脚本经 `trim-cli file upload` 上传用户目录 → 探针容器 root `cp` 注入 `@appdata/com.rainbow.music/data/sources/` → 容器重建后 `sources.loaded=7/ready=7`（音源页全部「运行中」）；
+2. **下载目录改回容器内路径**：经网关 `PATCH /api/v1/settings`（管理员）把 `download.dir` 改为相对路径 `data/downloads`（解析为 `/app/data/downloads` → `@appdata/.../data/downloads` 挂载，容器重建不丢；yaml 已写回）；
+3. **用户可见入口**：宿主软链 `/vol2/1000/Personal/projects/rainbow-downloads → /vol2/@appdata/com.rainbow.music/data/downloads`（文件管理器 projects 下可见下载结果）；
+4. **端到端验证**：搜索「起风了」→ 下载 flac 27.6MB 落盘（qdy 音源换源成功，kw 410 属源波动）→ `GET /api/v1/play/:taskId` Range 请求 206 `audio/flac`（流式播放正常）→ 宿主 `@appdata` 与软链入口均见文件。
+
+### v0.2.9 根治方向（本故障新增；已全部实施）
+
+1. **音源自愈（已实施）**：镜像内置音源副本（Dockerfile `COPY data/sources /app/data/sources-bundled` + `ENV RO_BUNDLED_SOURCES`，构建上下文经 .dockerignore 反排除放行），服务启动时 sources 目录无任何 .js 则 seeding 复制（`server/src/core/source-engine/index.ts`，只看 .js 后缀、绝不覆盖用户已有脚本、非 Docker 部署内置目录不存在则静默跳过）——卸载重装清空 `@appdata` 后音源自恢复，无需再手动上传；
+2. **下载目录对齐（已实施）**：`default_download_dir()` 默认输出容器内相对路径 `data/downloads`（服务端相对 ROOT_DIR=/app 解析即唯一挂载的 `/app/data/downloads`），与 compose 挂载自洽、容器重建不丢；向导显式传绝对路径仍可覆盖（fnOS 剥离字面挂载的限制不变，原生 data-share 挂载机制留待后续研究）；
+3. `default_download_dir()` 的 `${TRIM_PKGVAR}/downloads` 回退分支已随本次修正一并移除（同样断裂：compose 挂的是 `data/downloads`）；宿主侧 ensure_data_dirs 对相对路径不再 mkdir（旧绝对路径配置行为不变）。
+
 ## 安装向导：「音乐库扫描目录」配置与挂载机制
 
 v0.2.1 安装向导新增**「音乐库扫描目录（可选）」**字段：要导入本地音乐库的 NAS 目录（绝对路径，如 `/vol1/1000/music`），可填多个（英文逗号分隔）。
@@ -194,4 +276,4 @@ X-Trim-Isadmin: true|false # 是否 fnOS 管理员
 
 ---
 
-> 本文档的真机部分（checklist 执行结果）已由任务 #88 于 2026-08-26 回填（见上）；`core/fnos/trimapp.ts` 仍为 env 门控预留件，apiscope 契约真机联调留待后续。遗留：扫描目录挂载渲染机制因 fnOS compose 行为不生效（见「#88 实测发现」第 2 条），需改用 fnOS 原生向导目录参数实现；FN ID 浏览器全链与有声播放留用户侧确认。
+> 本文档的真机部分（checklist 执行结果）已由任务 #88 于 2026-08-26 回填（见上）；`core/fnos/trimapp.ts` 仍为 env 门控预留件，apiscope 契约真机联调留待后续。遗留：扫描目录挂载渲染机制因 fnOS compose 行为不生效（见「#88 实测发现」第 2 条），需改用 fnOS 原生向导目录参数实现。FN ID 浏览器全链已于 2026-08-27 网关修复后验证通过（见「v0.2.7/v0.2.8 网关 404 第三层根因」章末验清单）；有声播放留用户侧确认。

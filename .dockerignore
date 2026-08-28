@@ -3,7 +3,11 @@ server/node_modules
 server/dist
 server/test
 **/*.log
-data
+# v0.2.9：data 下仅放行 sources（镜像内置音源副本 COPY data/sources 需要），
+# downloads/db/临时库/日志等仍排除
+
+data/*
+!data/sources
 config.yaml
 .git
 scripts

@@ -1,6 +1,6 @@
 {
   "name": "rainbow-server",
-  "version": "0.2.6",
+  "version": "0.2.9",
   "description": "Rainbow — headless music download service (based on lx-music source ecosystem)",
   "private": true,
   "type": "module",

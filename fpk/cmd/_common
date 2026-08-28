@@ -82,13 +82,14 @@ probe_status() {
 # ---------- 配置渲染 ----------
 
 default_download_dir() {
-    # 优先取 data-share 托管的共享目录（rainbow-music），用户可在文件管理器直接看到下载结果；
-    # 没有共享目录时退回 ${TRIM_PKGVAR}/downloads（安装向导可覆盖）
-    if [ -n "${TRIM_DATA_SHARE_PATHS:-}" ]; then
-        printf '%s' "${TRIM_DATA_SHARE_PATHS%%:*}"
-    else
-        printf '%s/downloads' "${TRIM_PKGVAR:-}"
-    fi
+    # v0.2.9：默认容器内相对路径 data/downloads（服务端相对 ROOT_DIR=/app 解析，
+    # 即 compose 唯一挂载的 /app/data/downloads ← ${TRIM_PKGVAR}/data/downloads，
+    # 容器内自洽、容器重建不丢）。旧版把 TRIM_DATA_SHARE_PATHS（data-share 宿主
+    # 绝对路径）或 ${TRIM_PKGVAR}/downloads 写进 config.yaml 的 download.dir，
+    # 但 compose 从不挂载这两个目录——下载会落进容器可写层、容器重建即丢
+    # （结构性断裂，见 docs/FNOS-DEPLOY.md 2026-08-28 音源章根因二），已弃用。
+    # 向导仍可传 wizard_download_dir 绝对路径显式覆盖（语义与限制见部署文档）。
+    printf '%s' "data/downloads"
 }
 
 sed_escape_rhs() {
@@ -252,12 +253,48 @@ ensure_data_dirs() {
     # 幂等：数据目录落在 ${TRIM_PKGVAR}（飞牛托管，升级/重启不丢）
     local base="${TRIM_PKGVAR:?}"
     mkdir -p "$base/data/downloads" "$base/data/sources" "$base/data/db"
-    # 下载目录若指向 data-share 共享目录，也确保其存在
+    # 下载目录为宿主绝对路径（旧配置/向导显式覆盖）时确保其存在；
+    # v0.2.9：相对路径（默认 data/downloads）由容器内挂载目录提供，
+    # 宿主侧无从解析（回调 cwd 未知），不做 mkdir 以免误建目录
     local ddir
     ddir=$(awk '/^download:/{f=1;next} f && /^  dir:/{sub(/^  dir:[ \t]*/,""); print; exit} /^[^ ]/{f=0}' "$CONFIG_FILE" 2>/dev/null | tr -d '"' | tr -d "'")
-    if [ -n "$ddir" ]; then
-        mkdir -p "$ddir" 2>/dev/null || true
+    case "$ddir" in
+        /*) mkdir -p "$ddir" 2>/dev/null || true ;;
+    esac
+}
+
+# ---------- 网关 socket DB 补写（v0.2.9） ----------
+
+fix_gateway_socket() {
+    # fnOS 手动安装（manual_install=t）的 Docker 应用不解析 ui/config 的 gateway 字段
+    # （appcenter.app_service 与 trim_sac.entry 的 gateway_socket/gateway_prefix 为空
+    # → sacentry 周期无 socket 可注册 → 网关 404；根因见 docs/FNOS-DEPLOY.md
+    # 「v0.2.7/v0.2.8 网关 404 第三层根因」章）。
+    # 幂等补写：仅当字段为空时 UPDATE（fnOS 已正确写入或本函数先前补写均不动）；
+    # 宿主 root 经 pg peer 认证直连。install 时 app_service 行可能尚未由 fnOS 写入
+    # （时序未知），UPDATE 影响 0 行无害，upgrade_callback 再跑一次兜底——
+    # 本函数在 install_callback / upgrade_callback 成功路径末尾各调用一次。
+    local psql_bin sock prefix app service n
+    psql_bin=/usr/lib/postgresql/15/bin/psql
+    [ -x "$psql_bin" ] || { log_info "宿主无 psql，跳过网关 socket 补写"; return 0; }
+    # 应用名无 TRIM_* 环境变量可用，直接引用本文件顶部定义的 APP_NAME
+    app="${APP_NAME}"
+    service="${app}.Application"
+    sock="/var/apps/${app}/target/app.sock"
+    prefix="/app/${app}"
+    n=0
+    # if 条件上下文：psql 连接失败/库不存在时静默通过（stderr 已丢弃），
+    # 绝不阻断安装/升级（函数恒 return 0，set -e 安全）
+    if "$psql_bin" -h /run/postgresql -U postgres -d appcenter -Atc \
+      "UPDATE app_service SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE service_name='${service}' AND coalesce(gateway_socket,'')='';" 2>/dev/null; then
+        n=$((n+1))
     fi
+    if "$psql_bin" -h /run/postgresql -U postgres -d trim_sac -Atc \
+      "UPDATE entry SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE app_name='${app}' AND service_name='${service}' AND coalesce(gateway_socket,'')='';" 2>/dev/null; then
+        n=$((n+1))
+    fi
+    log_info "网关 socket 补写完成（触发表 ${n}/2；零表示 fnOS 已正确写入或库不可达）"
+    return 0
 }
 
 compose_up() {

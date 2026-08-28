@@ -51,6 +51,11 @@ rb_step "04-dirs"
 render_scan_mounts || rb_step "05-render-FAILED"
 rb_step "05-render"
 
+# v0.2.9：网关 socket DB 幂等补写兜底（install 时 app_service 行可能尚未写入，
+# 升级回调再补一次；函数内部全容错恒 return 0，失败不阻断升级）
+fix_gateway_socket || rb_step "05b-gateway-FAILED"
+rb_step "05b-gateway"
+
 # v0.2.3：不做 compose_up —— 升级回调执行环境无 docker.sock 权限（真机实测），
 # 容器拉起由 fnOS 升级主流程在回调成功后执行（与 install 流程职责边界一致）
 rb_step "06-done"

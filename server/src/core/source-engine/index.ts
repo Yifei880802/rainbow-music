@@ -144,9 +144,38 @@ export class SourceEngine extends EventEmitter {
   async loadAll(): Promise<void> {
     const dir = config.sources.dir
     fs.mkdirSync(dir, { recursive: true })
+    // v0.2.9 音源自愈：目录无任何 .js 且镜像内置副本存在时先 seeding（绝不覆盖已有脚本）
+    this.seedBundledSources(dir)
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'))
     for (const f of files) await this.load(path.join(dir, f))
     logger.info({ count: this.sources.size }, 'source engine: all sources loaded')
+  }
+
+  /**
+   * v0.2.9 音源自愈：sources 目录不存在任何 .js 音源脚本时，从镜像内置副本
+   * （RO_BUNDLED_SOURCES，默认 /app/data/sources-bundled，由 Dockerfile 把仓库
+   * data/sources 打进镜像）复制全部 .js 脚本。
+   * - 仅目录为空时执行：.bak/.disabled 等非 .js 文件不参与存在性判断，
+   *   也绝不覆盖用户已有脚本（卸载重装清空 @appdata 后音源自恢复）；
+   * - 非 Docker 部署内置目录不存在则静默跳过；
+   * - 复制失败仅告警不阻断启动（音源缺失至多影响下载链路，服务必须能起）。
+   */
+  private seedBundledSources(dir: string): void {
+    try {
+      const hasScript = fs.readdirSync(dir).some((f) => f.endsWith('.js'))
+      if (hasScript) return
+      const bundledDir = process.env.RO_BUNDLED_SOURCES ?? '/app/data/sources-bundled'
+      if (!fs.existsSync(bundledDir)) return
+      const bundled = fs.readdirSync(bundledDir).filter((f) => f.endsWith('.js'))
+      if (bundled.length === 0) return
+      for (const f of bundled) fs.copyFileSync(path.join(bundledDir, f), path.join(dir, f))
+      logger.info(
+        { count: bundled.length, from: bundledDir },
+        `[sources] 目录为空，已从镜像内置副本恢复 ${bundled.length} 个音源脚本`,
+      )
+    } catch (err) {
+      logger.warn({ err }, '[sources] 内置音源 seeding 失败，跳过（不影响服务启动）')
+    }
   }
 
   async load(file: string): Promise<void> {

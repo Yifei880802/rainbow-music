@@ -1,13 +1,23 @@
 {
     ".url": {
-        "com.rainbow.music.Gateway": {
+        "com.rainbow.music.Application": {
             "title": "Rainbow 音乐下载",
             "icon": "images/icon_{0}.png",
             "type": "iframe",
-            "protocol": "",
+            "microApp": true,
+            "port": "",
+            "protocol": "http",
             "gatewayPrefix": "/app/com.rainbow.music",
             "gatewaySocket": "app.sock",
             "url": "/app/com.rainbow.music",
+            "width": 1280,
+            "height": 820,
+            "control": {
+                "accessPerm": "readonly",
+                "portPerm": "hidden",
+                "pathPerm": "hidden",
+                "fullUrlPerm": "hidden"
+            },
             "allUsers": true
         }
     }
