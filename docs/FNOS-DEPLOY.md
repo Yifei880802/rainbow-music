@@ -1,4 +1,4 @@
-# Rainbow fnOS 部署指南（v0.2.9）
+# Rainbow fnOS 部署指南（v0.2.10）
 
 面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
@@ -150,11 +150,14 @@ WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Applicati
 - [x] **应用数据正常**：直开应用 URL 同样 200，五平台榜单与精选歌单数据经网关拉取正常，用户 Giraffe 登录态正常；
 - [x] **稳定性**：注册后连续运行 13 小时以上网关仍 200（次日复测 API 正常；期间容器无重启）。
 
-### 已知限制与后续（v0.2.9 方向；网关 socket 补写已实施）
+### 已知限制与后续（v0.2.10 方向；网关 socket 补写已实施+时序修复）
 
-1. **热修不随重装自愈（已于 v0.2.9 根治）**：卸载重装会重建 `app_service` 行（socket 字段大概率再次为空）——根因嫌疑已从 ui/config 结构（probe60 推翻）收敛到**安装渠道/应用形态**（probe61：`manual_install=t`+`is_docker=t` 的安装链未写入 gateway 字段）。v0.2.9 已实施原候选路径①：fpk 生命周期 `install_callback`/`upgrade_callback` 成功路径末尾内嵌 `fix_gateway_socket()`（`fpk/cmd/_common`），宿主 root 经 pg peer 认证直连 psql 幂等补写 app_service/entry 两表（仅空字段时 UPDATE，psql 不可达静默跳过不阻断安装/升级）——热修 SQL 随包自愈，重装/升级后等下一个 sacentry 周期（≤30 分钟）即注册。路径②（商店渠道形态重装实证 `source_id` 安装链）与③（向 fnOS 官方反馈手动安装 Docker 应用 gateway 字段缺失）留待后续；
+1. **热修不随重装自愈（已于 v0.2.9 实施 + v0.2.10 修时序缺口）**：卸载重装会重建 `app_service` 行——根因已收敛到**安装渠道/应用形态**（probe61：`manual_install=t`+`is_docker=t` 的安装链未写入 gateway 字段）。v0.2.9 在 `install_callback`/`upgrade_callback` 成功路径末尾内嵌 `fix_gateway_socket()`（`fpk/cmd/_common`），宿主 root 经 pg peer 认证直连 psql 幂等补写两表（仅空字段时 UPDATE）。
+   **v0.2.9 真机实测发现时序缺口（已取证）**：全新安装时 fnOS 写入 `app_service` 行（created 18:18:43.005）**晚于** install_callback 执行时刻——同步 UPDATE 落空 0 行；全新安装无 upgrade_callback 兜底；随后 18:31:05 entry 被 trim_sac 周期从空 app_service 重同步覆盖回空 → 19:01:05 周期后网关仍 404（升级路径无此问题：行早已存在，同步 UPDATE 命中）。
+   **v0.2.10 修复**：install/upgrade 同步调用之外新增后台 watcher（`fix_gateway_socket_watch()`）：生成一次性 watcher 脚本（引用 heredoc + 占位符内插，参数全字面量化、不依赖回调环境）落 `/tmp` 后 `nohup sh <文件>` 后台执行（脱离安装进程、不占用安装流程的 stdio、脚本 EXIT trap 自删不留持久文件），30 秒轮询两表空则幂等补写，双非空即退出，最长 10 分钟窗口——不依赖 fnOS 写行时序，彻底随包自愈；重装/升级后等下一个 sacentry 周期（≤30 分钟）即注册。路径②（商店渠道形态重装实证 `source_id` 安装链）与③（向 fnOS 官方反馈手动安装 Docker 应用 gateway 字段缺失）留待后续；
 2. **重启持久性**：`app_service` 已补值，理论上 NAS 重启后 entry 重建会带回 socket（数据来源链），但**未做专项重启实测**（2026-08-27 夜间未发生重启，uptime 连续）；建议下次计划内重启时顺带复验网关 200；
-3. 排查方法论沉淀：PG 直连取证配方、`trim_sac` 同步周期锚点、`upstream register` 日志模式（注意实际日志为带空格的 `upstream register`，grep `upstream_register` 无匹配）见 `probe43~61` 系列脚本（本地 `.qa-tmp/t99/`；真机 `rainbow-diag/` 下的探针输出已于收尾时全部清理，结论均已回填本文档）。
+3. **真机实测记录（v0.2.9，2026-08-28）**：升级路径全绿（7 源保持/数据保留/E2E 4.3MB/upgrade_callback 探针全过）；卸载重装路径 seeding 自愈、config 新默认、软链恢复、FN ID 贯通全过；唯 fix_gateway_socket 时序缺口 FAIL（上文已述，探针热修两表→19:31:05 周期注册→网关 200 恢复）。
+4. 排查方法论沉淀：PG 直连取证配方、`trim_sac` 同步周期锚点、`upstream register` 日志模式（注意实际日志为带空格的 `upstream register`，grep `upstream_register` 无匹配）见 `probe43~61` 系列脚本（本地 `.qa-tmp/t99/`；真机 `rainbow-diag/` 下的探针输出已于收尾时全部清理，结论均已回填本文档）。
 
 ## 2026-08-28 音源清空与下载目录断裂：根因与热修
 

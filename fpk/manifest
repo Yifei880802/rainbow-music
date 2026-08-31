@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.9
+version=0.2.10
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 source=thirdparty
@@ -14,4 +14,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=音源自愈：镜像内置音源副本启动 seeding，卸载重装不再清空音源；下载目录默认改容器内相对路径 data/downloads 与挂载自洽；install/upgrade 内嵌网关 socket 数据库幂等补写，随包自愈 fnOS 手动安装链 gateway 字段缺失；版本口径统一 0.2.9
+changelog=install 时序修复：全新安装时 fnOS 写入 app_service 行晚于 install_callback 执行，同步补写 UPDATE 落空（v0.2.9 真机实测缺口）；install/upgrade 新增后台 watcher（30 秒轮询、两表空则幂等补写、双非空即退出、最长 10 分钟），彻底随包自愈网关 socket 注册

@@ -263,7 +263,7 @@ ensure_data_dirs() {
     esac
 }
 
-# ---------- 网关 socket DB 补写（v0.2.9） ----------
+# ---------- 网关 socket DB 补写（v0.2.9；v0.2.10 增后台 watcher 兜底时序缺口） ----------
 
 fix_gateway_socket() {
     # fnOS 手动安装（manual_install=t）的 Docker 应用不解析 ui/config 的 gateway 字段
@@ -272,8 +272,10 @@ fix_gateway_socket() {
     # 「v0.2.7/v0.2.8 网关 404 第三层根因」章）。
     # 幂等补写：仅当字段为空时 UPDATE（fnOS 已正确写入或本函数先前补写均不动）；
     # 宿主 root 经 pg peer 认证直连。install 时 app_service 行可能尚未由 fnOS 写入
-    # （时序未知），UPDATE 影响 0 行无害，upgrade_callback 再跑一次兜底——
-    # 本函数在 install_callback / upgrade_callback 成功路径末尾各调用一次。
+    # （v0.2.10 真机实证：全新安装行 created_at 晚于脚本执行时刻，同步 UPDATE
+    # 影响 0 行；升级路径行早已存在则同步命中）——全新安装的时序缺口由紧随其后的
+    # fix_gateway_socket_watch 后台 watcher 兜底。本函数在 install_callback /
+    # upgrade_callback 成功路径各调用一次（同步调用保留，watcher 随后各自追加）。
     local psql_bin sock prefix app service n
     psql_bin=/usr/lib/postgresql/15/bin/psql
     [ -x "$psql_bin" ] || { log_info "宿主无 psql，跳过网关 socket 补写"; return 0; }
@@ -294,6 +296,96 @@ fix_gateway_socket() {
         n=$((n+1))
     fi
     log_info "网关 socket 补写完成（触发表 ${n}/2；零表示 fnOS 已正确写入或库不可达）"
+    return 0
+}
+
+render_gateway_watch_script() {
+    # 输出一次性 watcher 脚本内容到 stdout（fix_gateway_socket_watch 落盘后 nohup
+    # 执行）。生成 side 完成占位符内插：@PSQL@/@APP@/@SVC@/@SOCK@/@PREFIX@ 全部
+    # 字面量化，执行 side 是独立 /bin/sh 脚本、不依赖 _common/TRIM_* 环境。
+    # 引号嵌套地狱的规避手段：引用 heredoc + sed 占位符替换——运行期变量（$PSQL/
+    # $c1/$i/$0 等）原样透传，仅固定参数在生成时内插。
+    # 本机验证入口：本函数输出重定向到文件后 sh -n 即可干跑语法检查。
+    local psql_bin app service sock prefix
+    psql_bin=/usr/lib/postgresql/15/bin/psql
+    app="${APP_NAME}"
+    service="${app}.Application"
+    sock="/var/apps/${app}/target/app.sock"
+    prefix="/app/${app}"
+    sed -e "s|@PSQL@|${psql_bin}|g" -e "s|@APP@|${app}|g" -e "s|@SVC@|${service}|g" \
+        -e "s|@SOCK@|${sock}|g" -e "s|@PREFIX@|${prefix}|g" <<'WATCH'
+#!/bin/sh
+#
+# Rainbow 网关 socket 补写 watcher（一次性；由 fpk/cmd/_common 的
+# fix_gateway_socket_watch 生成，参数已全部字面量化，无外部依赖）。
+#
+# 背景（v0.2.10 时序缺口）：全新安装时 fnOS 写入 appcenter.app_service 行晚于
+# install_callback 执行（v0.2.9 真机实测），同步补写 UPDATE 影响 0 行；随后
+# trim_sac 周期又会从空 app_service 重同步覆盖 entry 回空 → 网关 404。
+#
+# 逻辑（30 秒一轮 × 20 轮 = 10 分钟窗口）：
+#   - app_service / entry 两表均存在 gateway_socket 非空的行 → 已自愈，干净退出
+#   - 否则执行与 fix_gateway_socket 相同的两个幂等 UPDATE（仅空字段才补）
+#   - 超时（10 分钟）正常退出；EXIT trap 自删本文件，不留持久痕迹
+#
+PSQL='@PSQL@'
+APP='@APP@'
+SVC='@SVC@'
+SOCK='@SOCK@'
+PREFIX='@PREFIX@'
+
+trap 'rm -f "$0" 2>/dev/null' EXIT
+[ -x "$PSQL" ] || exit 0
+
+i=1
+while [ "$i" -le 20 ]; do
+    sleep 30
+    c1=$("$PSQL" -h /run/postgresql -U postgres -d appcenter -Atc \
+        "SELECT count(*) FROM app_service WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')<>''" 2>/dev/null) || c1=''
+    c2=$("$PSQL" -h /run/postgresql -U postgres -d trim_sac -Atc \
+        "SELECT count(*) FROM entry WHERE app_name='${APP}' AND coalesce(gateway_socket,'')<>''" 2>/dev/null) || c2=''
+    case "$c1" in ''|*[!0-9]*) c1=0 ;; esac
+    case "$c2" in ''|*[!0-9]*) c2=0 ;; esac
+    if [ "$c1" -ge 1 ] && [ "$c2" -ge 1 ]; then
+        exit 0
+    fi
+    "$PSQL" -h /run/postgresql -U postgres -d appcenter -Atc \
+        "UPDATE app_service SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')='';" 2>/dev/null || true
+    "$PSQL" -h /run/postgresql -U postgres -d trim_sac -Atc \
+        "UPDATE entry SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE app_name='${APP}' AND service_name='${SVC}' AND coalesce(gateway_socket,'')='';" 2>/dev/null || true
+    i=$((i+1))
+done
+exit 0
+WATCH
+}
+
+fix_gateway_socket_watch() {
+    # v0.2.10：install 时序缺口的兜底。install_callback 执行时 fnOS 可能尚未写入
+    # appcenter.app_service 行（v0.2.9 真机实测：行 created_at 晚于脚本执行时刻，
+    # fix_gateway_socket 的同步 UPDATE 影响 0 行），且随后 trim_sac 周期从空
+    # app_service 重同步会把 entry 覆盖回空 → 网关 404 需人工热修。本函数生成
+    # 一次性 watcher 脚本落 /tmp 后 nohup 后台执行文件路径：
+    #   - 脱离安装进程（孤儿进程重挂 init，nohup 忽略 SIGHUP）；三向重定向后
+    #     不占用安装流程的 stdin/stdout/stderr，不阻塞回调返回；
+    #   - 后台启动 `cmd &` 在 set -eu 下恒返回 0（仅 fork 失败非零），安全；
+    #   - watcher 30 秒轮询两表、空则幂等补写、双非空即退出、最长 10 分钟，
+    #     脚本 EXIT trap 自删（/tmp 临时文件不留持久痕迹）。
+    # 幂等无害：install/upgrade 各启动一次；fnOS 升级链重跑 install_callback
+    # 的场景可能并发两个 watcher，UPDATE 仅补空字段，互不冲突。
+    local psql_bin tmp
+    psql_bin=/usr/lib/postgresql/15/bin/psql
+    [ -x "$psql_bin" ] || { log_info "宿主无 psql，跳过网关 socket watcher"; return 0; }
+    tmp=$(mktemp /tmp/rainbow-gw-watch.XXXXXX 2>/dev/null) || {
+        log_info "网关 socket watcher：临时文件创建失败，跳过"
+        return 0
+    }
+    if ! render_gateway_watch_script > "$tmp" 2>/dev/null; then
+        rm -f "$tmp" 2>/dev/null || true
+        log_info "网关 socket watcher：脚本生成失败，跳过"
+        return 0
+    fi
+    nohup sh "$tmp" </dev/null >/dev/null 2>&1 &
+    log_info "已启动网关 socket 补写 watcher（后台，最长 10 分钟）"
     return 0
 }
 

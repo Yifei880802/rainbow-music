@@ -56,6 +56,11 @@ rb_step "05-render"
 fix_gateway_socket || rb_step "05b-gateway-FAILED"
 rb_step "05b-gateway"
 
+# v0.2.10：同样启动后台 watcher（幂等无害，防御 fnOS 升级链重建 app_service
+# 行再次出现空字段的时序缺口；30 秒轮询、双非空即退出、最长 10 分钟）
+fix_gateway_socket_watch || rb_step "05c-watch-FAILED"
+rb_step "05c-watch"
+
 # v0.2.3：不做 compose_up —— 升级回调执行环境无 docker.sock 权限（真机实测），
 # 容器拉起由 fnOS 升级主流程在回调成功后执行（与 install 流程职责边界一致）
 rb_step "06-done"
