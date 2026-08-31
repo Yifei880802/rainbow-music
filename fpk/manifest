@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.10
+version=0.2.11
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 source=thirdparty
@@ -14,4 +14,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=install 时序修复：全新安装时 fnOS 写入 app_service 行晚于 install_callback 执行，同步补写 UPDATE 落空（v0.2.9 真机实测缺口）；install/upgrade 新增后台 watcher（30 秒轮询、两表空则幂等补写、双非空即退出、最长 10 分钟），彻底随包自愈网关 socket 注册
+changelog=install 时序+身份双根因根治：v0.2.10 实测发现 fnOS 回调以应用专用用户（uid 975）执行，宿主 psql peer 认证被拒致补写静默失败；v0.2.11 补写 SQL 改经 docker 容器执行（容器 uid 0 过 pg peer 认证，真机实证配方），watcher 增加逐轮日志（gateway-watch.log）消除静默失败

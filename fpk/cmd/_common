@@ -263,108 +263,222 @@ ensure_data_dirs() {
     esac
 }
 
-# ---------- 网关 socket DB 补写（v0.2.9；v0.2.10 增后台 watcher 兜底时序缺口） ----------
+# ---------- 网关 socket DB 补写（v0.2.9 引入；v0.2.10 watcher；v0.2.11 docker 化执行） ----------
+
+# rb_psql 的失败原因（供调用方 log_info；空表示无失败或未调用）
+rb_psql_err=""
+
+rb_psql() {
+    # $1=库名 $2=SQL；stdout=psql 输出（-Atc），失败输出空、原因写入全局 rb_psql_err。
+    # v0.2.11：回调执行身份是应用专用系统用户（uid 975，非 root），宿主直跑 psql
+    # 被 pg peer 认证拒绝（pg_hba local peer + pg_ident trim_root 仅映射 root）
+    # ——v0.2.10 真机实证 watcher 20 轮 UPDATE 全部被静默吞掉。改经 docker 容器
+    # （默认 uid 0）执行宿主 psql：容器进程经共享 unix socket 的 peer 凭据为
+    # root，trim_root 放行（真机探针 20 余次 100% 成功的配方）。
+    # 依赖：docker CLI（回调可用，与 compose_up 同通道）、宿主 loader/psql、
+    # compose 落盘文件的 image: 行（用 rainbow 自身镜像，与宿主 lib 兼容已实证）。
+    local db="$1" sql="$2" img errf
+    local loader=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+    local psqlbin=/usr/lib/postgresql/15/bin/psql
+    rb_psql_err=""
+    command -v docker >/dev/null 2>&1 || { rb_psql_err="docker CLI 不可用"; return 1; }
+    [ -x "$loader" ] || { rb_psql_err="宿主 loader 缺失（${loader}，非 x86_64 或路径变化）"; return 1; }
+    [ -x "$psqlbin" ] || { rb_psql_err="宿主 psql 缺失（${psqlbin}）"; return 1; }
+    img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
+    [ -n "$img" ] || { rb_psql_err="compose 未取到 image（${COMPOSE_FILE:-未设置}）"; return 1; }
+    # stderr 落临时文件：失败时取末行入 rb_psql_err（可观测），用完即删
+    errf="/tmp/rb-psql-err.$$"
+    if docker run --rm \
+        -v /usr:/husr:ro -v /run:/hrun:ro \
+        --entrypoint "$loader" "$img" \
+        --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
+        "$psqlbin" -h /hrun/postgresql -U postgres -d "$db" -Atc "$sql" 2>"$errf"; then
+        rm -f "$errf" 2>/dev/null
+        return 0
+    fi
+    rb_psql_err=$(tail -n 1 "$errf" 2>/dev/null)
+    rm -f "$errf" 2>/dev/null
+    [ -n "$rb_psql_err" ] || rb_psql_err="docker run 失败（stderr 空）"
+    return 1
+}
 
 fix_gateway_socket() {
     # fnOS 手动安装（manual_install=t）的 Docker 应用不解析 ui/config 的 gateway 字段
     # （appcenter.app_service 与 trim_sac.entry 的 gateway_socket/gateway_prefix 为空
     # → sacentry 周期无 socket 可注册 → 网关 404；根因见 docs/FNOS-DEPLOY.md
     # 「v0.2.7/v0.2.8 网关 404 第三层根因」章）。
-    # 幂等补写：仅当字段为空时 UPDATE（fnOS 已正确写入或本函数先前补写均不动）；
-    # 宿主 root 经 pg peer 认证直连。install 时 app_service 行可能尚未由 fnOS 写入
-    # （v0.2.10 真机实证：全新安装行 created_at 晚于脚本执行时刻，同步 UPDATE
-    # 影响 0 行；升级路径行早已存在则同步命中）——全新安装的时序缺口由紧随其后的
+    # 幂等补写：仅当字段为空时 UPDATE（fnOS 已正确写入或本函数先前补写均不动）。
+    # v0.2.11：SQL 执行改走 rb_psql（docker 容器内跑宿主 psql）——v0.2.10 真机实测
+    # 发现回调以应用专用用户（uid 975）执行，宿主直跑 psql 被 pg peer 认证拒绝
+    # （pg_ident trim_root 仅映射 root），v0.2.9~v0.2.10 的直连 UPDATE 从未真正生效
+    # （升级路径「同步命中」实为旧值残留假象）。install 时 app_service 行可能尚未
+    # 由 fnOS 写入（时序缺口，同步 UPDATE 影响 0 行）——由紧随其后的
     # fix_gateway_socket_watch 后台 watcher 兜底。本函数在 install_callback /
     # upgrade_callback 成功路径各调用一次（同步调用保留，watcher 随后各自追加）。
-    local psql_bin sock prefix app service n
-    psql_bin=/usr/lib/postgresql/15/bin/psql
-    [ -x "$psql_bin" ] || { log_info "宿主无 psql，跳过网关 socket 补写"; return 0; }
-    # 应用名无 TRIM_* 环境变量可用，直接引用本文件顶部定义的 APP_NAME
+    local app service sock prefix out n a b
     app="${APP_NAME}"
     service="${app}.Application"
     sock="/var/apps/${app}/target/app.sock"
     prefix="/app/${app}"
-    n=0
-    # if 条件上下文：psql 连接失败/库不存在时静默通过（stderr 已丢弃），
+    n=0 a=0 b=0
+    # 失败分支（docker/loader/psql/image 缺失或 docker run 失败）log_info 提示后继续，
     # 绝不阻断安装/升级（函数恒 return 0，set -e 安全）
-    if "$psql_bin" -h /run/postgresql -U postgres -d appcenter -Atc \
-      "UPDATE app_service SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE service_name='${service}' AND coalesce(gateway_socket,'')='';" 2>/dev/null; then
-        n=$((n+1))
-    fi
-    if "$psql_bin" -h /run/postgresql -U postgres -d trim_sac -Atc \
-      "UPDATE entry SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE app_name='${app}' AND service_name='${service}' AND coalesce(gateway_socket,'')='';" 2>/dev/null; then
-        n=$((n+1))
-    fi
-    log_info "网关 socket 补写完成（触发表 ${n}/2；零表示 fnOS 已正确写入或库不可达）"
+    out=$(rb_psql appcenter "UPDATE app_service SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE service_name='${service}' AND coalesce(gateway_socket,'')='';") \
+        || log_info "网关补写 appcenter 未执行：${rb_psql_err:-未知}"
+    case "$out" in UPDATE\ *) n=$((n+1)); a=${out#UPDATE } ;; esac
+    out=$(rb_psql trim_sac "UPDATE entry SET gateway_socket='${sock}', gateway_prefix='${prefix}', updated_at=now() WHERE app_name='${app}' AND service_name='${service}' AND coalesce(gateway_socket,'')='';") \
+        || log_info "网关补写 trim_sac 未执行：${rb_psql_err:-未知}"
+    case "$out" in UPDATE\ *) n=$((n+1)); b=${out#UPDATE } ;; esac
+    log_info "网关 socket 补写完成（触发表 ${n}/2，补写行数 appcenter=${a} entry=${b}；零表示 fnOS 已正确写入或调用失败，后续轮次见 gateway-watch.log）"
     return 0
 }
 
 render_gateway_watch_script() {
     # 输出一次性 watcher 脚本内容到 stdout（fix_gateway_socket_watch 落盘后 nohup
-    # 执行）。生成 side 完成占位符内插：@PSQL@/@APP@/@SVC@/@SOCK@/@PREFIX@ 全部
-    # 字面量化，执行 side 是独立 /bin/sh 脚本、不依赖 _common/TRIM_* 环境。
-    # 引号嵌套地狱的规避手段：引用 heredoc + sed 占位符替换——运行期变量（$PSQL/
-    # $c1/$i/$0 等）原样透传，仅固定参数在生成时内插。
+    # 执行）。生成 side 完成占位符内插：@IMG@/@LOADER@/@PSQL@/@LOG@/@APP@/@SVC@/
+    # @SOCK@/@PREFIX@ 全部字面量化，执行 side 是独立 /bin/sh 脚本、不依赖
+    # _common/TRIM_* 环境。引用 heredoc + sed 占位符替换规避引号嵌套地狱：
+    # 运行期变量（$QOUT/$WERR/$i/$0 等）原样透传，仅固定参数在生成时内插。
+    # v0.2.11：SQL 执行与 rb_psql 同款 docker run 调用（镜像名从 compose 取后内插）；
+    # 每轮往 @LOG@（TRIM_APPDEST/gateway-watch.log）追加观测行，失败不再静默。
     # 本机验证入口：本函数输出重定向到文件后 sh -n 即可干跑语法检查。
-    local psql_bin app service sock prefix
-    psql_bin=/usr/lib/postgresql/15/bin/psql
+    local app service sock prefix img logf appdest
     app="${APP_NAME}"
     service="${app}.Application"
     sock="/var/apps/${app}/target/app.sock"
     prefix="/app/${app}"
-    sed -e "s|@PSQL@|${psql_bin}|g" -e "s|@APP@|${app}|g" -e "s|@SVC@|${service}|g" \
-        -e "s|@SOCK@|${sock}|g" -e "s|@PREFIX@|${prefix}|g" <<'WATCH'
+    appdest="${TRIM_APPDEST:-/vol2/@appcenter/${app}}"
+    logf="${appdest}/gateway-watch.log"
+    img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
+    [ -n "$img" ] || img="UNRESOLVED"
+    sed -e "s|@IMG@|$(sed_escape_rhs "$img")|g" \
+        -e "s|@LOADER@|/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2|g" \
+        -e "s|@PSQL@|/usr/lib/postgresql/15/bin/psql|g" \
+        -e "s|@LOG@|$(sed_escape_rhs "$logf")|g" \
+        -e "s|@APP@|$(sed_escape_rhs "$app")|g" \
+        -e "s|@SVC@|$(sed_escape_rhs "$service")|g" \
+        -e "s|@SOCK@|$(sed_escape_rhs "$sock")|g" \
+        -e "s|@PREFIX@|$(sed_escape_rhs "$prefix")|g" <<'WATCH'
 #!/bin/sh
 #
-# Rainbow 网关 socket 补写 watcher（一次性；由 fpk/cmd/_common 的
+# Rainbow 网关 socket 补写 watcher v2（一次性；由 fpk/cmd/_common 的
 # fix_gateway_socket_watch 生成，参数已全部字面量化，无外部依赖）。
 #
-# 背景（v0.2.10 时序缺口）：全新安装时 fnOS 写入 appcenter.app_service 行晚于
-# install_callback 执行（v0.2.9 真机实测），同步补写 UPDATE 影响 0 行；随后
-# trim_sac 周期又会从空 app_service 重同步覆盖 entry 回空 → 网关 404。
+# 背景（v0.2.10 真机实测深层根因）：fnOS 回调以应用专用用户（uid 975）执行，
+# 宿主直跑 psql 被 pg peer 认证拒绝（pg_ident trim_root 仅映射 root）——
+# v0.2.10 的 20 轮 UPDATE 曾全部被静默吞掉。SQL 改经 docker 容器执行
+# （容器 uid 0，共享 unix socket 的 peer 凭据为 root，trim_root 放行；
+# 真机探针 20 余次 100% 成功的配方）。
 #
 # 逻辑（30 秒一轮 × 20 轮 = 10 分钟窗口）：
-#   - app_service / entry 两表均存在 gateway_socket 非空的行 → 已自愈，干净退出
-#   - 否则执行与 fix_gateway_socket 相同的两个幂等 UPDATE（仅空字段才补）
-#   - 超时（10 分钟）正常退出；EXIT trap 自删本文件，不留持久痕迹
+#   - 每轮查两表 gateway_socket 非空行数（c1/c2），逐轮写一行到 @LOG@
+#   - 双非空 → 已自愈，写退出行后干净退出
+#   - 否则两个幂等 UPDATE（仅空字段才补），updated=A/B 记录影响行数
+#   - docker/psql 失败不静默：stderr 末行写入日志（psql-err=...），本轮跳过继续
+#   - 超时（10 分钟）写超时行后正常退出；EXIT trap 自删本文件
 #
-PSQL='@PSQL@'
+IMG='@IMG@'
+LOADER='@LOADER@'
+PSQLBIN='@PSQL@'
+LOG='@LOG@'
 APP='@APP@'
 SVC='@SVC@'
 SOCK='@SOCK@'
 PREFIX='@PREFIX@'
 
+wlog() {
+    printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$LOG" 2>/dev/null || true
+}
+
+# SQL 执行：$1=库 $2=SQL；成功 rc=0、QOUT=psql stdout 末行；失败 rc≠0、WERR=stderr 末行
+# （不用命令替换调 q：子 shell 内的全局变量赋值回不到本层）
+QOUT=''
+WERR=''
+q() {
+    QOUT=''
+    WERR=''
+    qerrf="/tmp/rainbow-gw-qerr.$$"
+    QOUT=$(docker run --rm \
+        -v /usr:/husr:ro -v /run:/hrun:ro \
+        --entrypoint "$LOADER" "$IMG" \
+        --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
+        "$PSQLBIN" -h /hrun/postgresql -U postgres -d "$1" -Atc "$2" 2>"$qerrf") || {
+        WERR=$(tail -n 1 "$qerrf" 2>/dev/null)
+        rm -f "$qerrf"
+        return 1
+    }
+    rm -f "$qerrf"
+    QOUT=$(printf '%s\n' "$QOUT" | tail -n 1)
+    return 0
+}
+
 trap 'rm -f "$0" 2>/dev/null' EXIT
-[ -x "$PSQL" ] || exit 0
+
+wlog "watcher start pid=$$ img=${IMG} rounds=20 interval=30s"
+
+if ! command -v docker >/dev/null 2>&1; then
+    wlog "watcher exit reason=no-docker-cli"
+    exit 0
+fi
+if [ ! -x "$LOADER" ] || [ ! -x "$PSQLBIN" ]; then
+    wlog "watcher exit reason=loader-or-psql-missing loader=${LOADER}"
+    exit 0
+fi
 
 i=1
 while [ "$i" -le 20 ]; do
     sleep 30
-    c1=$("$PSQL" -h /run/postgresql -U postgres -d appcenter -Atc \
-        "SELECT count(*) FROM app_service WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')<>''" 2>/dev/null) || c1=''
-    c2=$("$PSQL" -h /run/postgresql -U postgres -d trim_sac -Atc \
-        "SELECT count(*) FROM entry WHERE app_name='${APP}' AND coalesce(gateway_socket,'')<>''" 2>/dev/null) || c2=''
-    case "$c1" in ''|*[!0-9]*) c1=0 ;; esac
-    case "$c2" in ''|*[!0-9]*) c2=0 ;; esac
-    if [ "$c1" -ge 1 ] && [ "$c2" -ge 1 ]; then
+    c1='?'
+    c2='?'
+    a='?'
+    b='?'
+    perr=''
+    if q appcenter "SELECT count(*) FROM app_service WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')<>''"; then
+        c1="$QOUT"
+        case "$c1" in ''|*[!0-9]*) c1=0 ;; esac
+    else
+        perr="${WERR:-docker run 失败}"
+    fi
+    if q trim_sac "SELECT count(*) FROM entry WHERE app_name='${APP}' AND coalesce(gateway_socket,'')<>''"; then
+        c2="$QOUT"
+        case "$c2" in ''|*[!0-9]*) c2=0 ;; esac
+    else
+        [ -n "$perr" ] || perr="${WERR:-docker run 失败}"
+    fi
+    if [ "$c1" != '?' ] && [ "$c2" != '?' ] && [ "$c1" -ge 1 ] && [ "$c2" -ge 1 ]; then
+        wlog "round=$i c1=$c1 c2=$c2 self-healed"
+        wlog "watcher exit reason=self-healed rounds=$i"
         exit 0
     fi
-    "$PSQL" -h /run/postgresql -U postgres -d appcenter -Atc \
-        "UPDATE app_service SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')='';" 2>/dev/null || true
-    "$PSQL" -h /run/postgresql -U postgres -d trim_sac -Atc \
-        "UPDATE entry SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE app_name='${APP}' AND service_name='${SVC}' AND coalesce(gateway_socket,'')='';" 2>/dev/null || true
+    if q appcenter "UPDATE app_service SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE service_name='${SVC}' AND coalesce(gateway_socket,'')='';"; then
+        a="$QOUT"
+        case "$a" in UPDATE\ *) a=${a#UPDATE } ;; *) a='?' ;; esac
+    else
+        a='err'
+        [ -n "$perr" ] || perr="u:${WERR:-docker run 失败}"
+    fi
+    if q trim_sac "UPDATE entry SET gateway_socket='${SOCK}', gateway_prefix='${PREFIX}', updated_at=now() WHERE app_name='${APP}' AND service_name='${SVC}' AND coalesce(gateway_socket,'')='';"; then
+        b="$QOUT"
+        case "$b" in UPDATE\ *) b=${b#UPDATE } ;; *) b='?' ;; esac
+    else
+        b='err'
+        [ -n "$perr" ] || perr="u:${WERR:-docker run 失败}"
+    fi
+    wlog "round=$i c1=$c1 c2=$c2 updated=$a/$b${perr:+ psql-err=$perr}"
     i=$((i+1))
 done
+wlog "watcher exit reason=timeout rounds=$((i-1))"
 exit 0
 WATCH
 }
 
 fix_gateway_socket_watch() {
-    # v0.2.10：install 时序缺口的兜底。install_callback 执行时 fnOS 可能尚未写入
-    # appcenter.app_service 行（v0.2.9 真机实测：行 created_at 晚于脚本执行时刻，
-    # fix_gateway_socket 的同步 UPDATE 影响 0 行），且随后 trim_sac 周期从空
-    # app_service 重同步会把 entry 覆盖回空 → 网关 404 需人工热修。本函数生成
-    # 一次性 watcher 脚本落 /tmp 后 nohup 后台执行文件路径：
+    # v0.2.10：install 时序缺口的兜底（fnOS 写 app_service 行晚于回调执行，同步
+    # UPDATE 落空；trim_sac 周期还会从空 app_service 重同步覆盖 entry 回空）。
+    # v0.2.11：SQL 执行 docker 化（回调 uid 975 过不了 pg peer 认证，直连 psql
+    # 从未生效；容器内 uid 0 可过，真机实证配方）+ 逐轮日志
+    # （${TRIM_APPDEST}/gateway-watch.log，含 psql-err 失败行，消除静默失败）。
+    # 启动形态：一次性脚本落 /tmp 后 nohup sh <文件> 后台执行——
     #   - 脱离安装进程（孤儿进程重挂 init，nohup 忽略 SIGHUP）；三向重定向后
     #     不占用安装流程的 stdin/stdout/stderr，不阻塞回调返回；
     #   - 后台启动 `cmd &` 在 set -eu 下恒返回 0（仅 fork 失败非零），安全；
@@ -372,9 +486,14 @@ fix_gateway_socket_watch() {
     #     脚本 EXIT trap 自删（/tmp 临时文件不留持久痕迹）。
     # 幂等无害：install/upgrade 各启动一次；fnOS 升级链重跑 install_callback
     # 的场景可能并发两个 watcher，UPDATE 仅补空字段，互不冲突。
-    local psql_bin tmp
-    psql_bin=/usr/lib/postgresql/15/bin/psql
-    [ -x "$psql_bin" ] || { log_info "宿主无 psql，跳过网关 socket watcher"; return 0; }
+    local img loader psqlbin tmp appdest
+    loader=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+    psqlbin=/usr/lib/postgresql/15/bin/psql
+    appdest="${TRIM_APPDEST:-/vol2/@appcenter/${APP_NAME}}"
+    command -v docker >/dev/null 2>&1 || { log_info "宿主无 docker CLI，跳过网关 socket watcher"; return 0; }
+    [ -x "$loader" ] && [ -x "$psqlbin" ] || { log_info "宿主缺 loader/psql（x86_64 布局），跳过网关 socket watcher"; return 0; }
+    img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
+    [ -n "$img" ] || { log_info "compose 未取到 image（${COMPOSE_FILE:-未设置}），跳过网关 socket watcher"; return 0; }
     tmp=$(mktemp /tmp/rainbow-gw-watch.XXXXXX 2>/dev/null) || {
         log_info "网关 socket watcher：临时文件创建失败，跳过"
         return 0
@@ -385,7 +504,7 @@ fix_gateway_socket_watch() {
         return 0
     fi
     nohup sh "$tmp" </dev/null >/dev/null 2>&1 &
-    log_info "已启动网关 socket 补写 watcher（后台，最长 10 分钟）"
+    log_info "已启动网关 socket 补写 watcher（后台，最长 10 分钟；日志 ${appdest}/gateway-watch.log）"
     return 0
 }
 

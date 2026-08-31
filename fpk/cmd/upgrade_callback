@@ -57,7 +57,9 @@ fix_gateway_socket || rb_step "05b-gateway-FAILED"
 rb_step "05b-gateway"
 
 # v0.2.10：同样启动后台 watcher（幂等无害，防御 fnOS 升级链重建 app_service
-# 行再次出现空字段的时序缺口；30 秒轮询、双非空即退出、最长 10 分钟）
+# 行再次出现空字段的时序缺口；30 秒轮询、双非空即退出、最长 10 分钟）。
+# v0.2.11：SQL 执行 docker 化（回调 uid 975 过不了 pg peer 认证，改经容器内
+# uid 0 执行；watcher 逐轮写 gateway-watch.log 消除静默失败）
 fix_gateway_socket_watch || rb_step "05c-watch-FAILED"
 rb_step "05c-watch"
 

@@ -19,11 +19,13 @@ render_scan_mounts "${wizard_scan_dirs:-}"
 ensure_data_dirs
 # v0.2.9：网关 socket DB 幂等补写（fnOS 手动安装链不写 gateway 字段的根治项；
 # 函数内部全容错恒 return 0，set -e 安全；fnOS 可能稍后才写 app_service 行，
-# upgrade_callback 会再跑一次兜底）
-fix_gateway_socket
+# upgrade_callback 会再跑一次兜底）。
 # v0.2.10：全新安装时序缺口兜底——真机实测 fnOS 写入 app_service 行晚于本回调
-# 执行（同步 UPDATE 影响 0 行），且随后 trim_sac 周期会把 entry 重同步覆盖回空；
-# watcher 后台 30 秒轮询幂等补写两表、双非空即退出（最长 10 分钟），随包自愈。
-# 同步调用保留：升级链行早已存在时同步命中，全新安装由 watcher 兜底
+# 执行（同步 UPDATE 影响 0 行），且随后 trim_sac 周期会把 entry 重同步覆盖回空，
+# 由下方 watcher 后台 30 秒轮询幂等补写两表、双非空即退出（最长 10 分钟）。
+# v0.2.11：SQL 执行 docker 化——回调以应用专用用户（uid 975）执行，宿主直跑
+# psql 被 pg peer 认证拒绝（v0.2.10 实测静默失败），改经容器内 uid 0 执行；
+# watcher 逐轮写 ${TRIM_APPDEST}/gateway-watch.log 消除静默失败
+fix_gateway_socket
 fix_gateway_socket_watch
 exit 0
