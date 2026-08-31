@@ -108,6 +108,11 @@
         </div>
       </header>
 
+      <!-- v0.2.12 网关注册诊断横幅（main.js initGatewayHealthBanner 按需填充：
+           waiting=刚安装宽限 / suspected-unregistered=疑似未注册到飞牛网关，
+           可关闭本次会话不再提示；ok/unknown 不展示） -->
+      <div id="gw-banner" class="gw-banner" hidden></div>
+
       <main>
         <!-- 发现（#60 热门歌单聚合首页，默认视图） -->
         <section id="view-home" class="view active">

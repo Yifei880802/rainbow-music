@@ -23,6 +23,7 @@ import { authRoutes, registerAuthGuard, GATEWAY_URL_PREFIX } from './routes/auth
 import { meRoutes } from './routes/me.js'
 import { libraryRoutes } from './routes/library.js' // v0.2.1 模块四：本地音乐库扫描/流播/封面
 import { createRateLimiter } from './core/rate-limit.js'
+import { createGatewayStatsHook } from './core/gateway-stats.js' // v0.2.12：网关注册诊断计数（两实例共享单例）
 import { startSmokeScheduler } from './core/smoke/scheduler.js'
 import { sourceEngine } from './core/source-engine/index.js'
 import { downloadQueue } from './core/download/queue.js'
@@ -81,6 +82,11 @@ async function buildApp(opts: BuildAppOptions) {
   if (config.rateLimit.enabled) {
     app.addHook('onRequest', createRateLimiter({ windowMs: config.rateLimit.windowMs, max: config.rateLimit.max }))
   }
+
+  // v0.2.12 网关注册诊断：被动统计 /api/v1/* 流量来源（网关实例的到达即网关转发
+  // 证明；仅计业务 API，静态资源减噪）。挂限流之后——被限流拒绝的洪水不进统计。
+  // 结果经 GET /api/v1/status 的 gatewayHealth 块暴露，前端据此展示引导横幅。
+  app.addHook('onRequest', createGatewayStatsHook(opts.trustGatewayHeaders))
 
   // 鉴权守卫必须在所有业务路由/静态资源之前装到根 app（全局生效）
   registerAuthGuard(app, { trustGatewayHeaders: opts.trustGatewayHeaders })

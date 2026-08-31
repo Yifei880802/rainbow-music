@@ -17,6 +17,13 @@ source "$(cd "$(dirname "$0")" && pwd)/_common"
 render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
 render_scan_mounts "${wizard_scan_dirs:-}"
 ensure_data_dirs
+# v0.2.12：安装时刻 marker（宿主 ${TRIM_PKGVAR}/data/install.marker，容器内
+# /app/data/install.marker 经 @appdata 挂载可读）——供运行时网关注册诊断区分
+# 「刚安装等待 sacentry 同步周期（≤30 分钟）」宽限期（waiting 态）。首行为 epoch
+# 秒（服务端解析），次行人类可读时间戳；升级不写（升级不重建 app_service 行，
+# 不影响注册语义）。写失败仅告警不阻断安装。
+printf '%s\n' "$(date +%s)" "$(date -Iseconds)" > "${TRIM_PKGVAR}/data/install.marker" 2>/dev/null \
+    || log_info "install marker 写入失败（不影响安装，仅诊断 waiting 态降级）"
 # v0.2.9：网关 socket DB 幂等补写（fnOS 手动安装链不写 gateway 字段的根治项；
 # 函数内部全容错恒 return 0，set -e 安全；fnOS 可能稍后才写 app_service 行，
 # upgrade_callback 会再跑一次兜底）。

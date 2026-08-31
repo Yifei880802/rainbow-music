@@ -673,13 +673,35 @@ es.addEventListener('task:completed', e => console.log('完成', JSON.parse(e.da
 **响应 200**：
 ```json
 {
-  "app": "ro", "version": "0.2.11", "uptimeSec": 3600,
+  "app": "ro", "version": "0.2.12", "uptimeSec": 3600,
   "node": "v22.x.x", "memoryMB": 198,
   "sources": { "loaded": 1, "ready": 1 },
-  "tasks": { "pending": 0, "active": 1, "completed": 12, "failed": 0 }
+  "tasks": { "pending": 0, "active": 1, "completed": 12, "failed": 0 },
+  "gatewayHealth": {
+    "status": "suspected-unregistered",
+    "suspectedUnregistered": true,
+    "recentlyInstalled": false,
+    "totalRequests": 23,
+    "gatewayRequests": 0,
+    "startedAt": "2026-08-31T12:00:00.000Z",
+    "firstRequestAt": "2026-08-31T12:05:11.000Z",
+    "lastGatewayRequestAt": null,
+    "installMarkerAt": "2026-08-31T11:58:40.000Z"
+  }
 }
 ```
 > 开启鉴权时未授权访问返回 `401`（healthcheck 视 401 为「存活」，仅连接失败判宕机）。
+>
+> `gatewayHealth`（v0.2.12）：网关注册诊断（全内存被动统计 + install marker 现算，
+> 公开计数无敏感信息；网关 404 时用户走直连也可读取——正是诊断目标场景）。
+> `status` 取值：`ok`（已有网关流量，注册且转发正常）/ `waiting`（刚安装宽限，
+> sacentry 同步周期最长约 30 分钟）/ `suspected-unregistered`（运行 >10 分钟且
+> 有 API 流量但零网关流量——从飞牛桌面打开将 404）/ `unknown`（流量为零无从
+> 判断；或直连流量存在但观察窗未满）。网关流量按实例级判定（网关 Unix Socket
+> 实例收到的 `/api/v1/*` 请求），静态资源不计；install marker 由 fpk
+> install_callback 写入 `@appdata` 根 `data/install.marker`（升级不写，非 fpk
+> 部署无此文件时 `installMarkerAt` 为 null）。详见
+> `docs/FNOS-DEPLOY.md` 与 `docs/FNOS-FEEDBACK.md`。
 
 ---
 

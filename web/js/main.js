@@ -323,6 +323,63 @@ document.addEventListener('recent:changed', renderRecent)
 $('#sb-recent')?.addEventListener('click', onRecentClick)
 renderRecent()
 
+/* ============================================================
+   v0.2.12 · 网关注册诊断横幅
+   - 数据源：GET /api/v1/status 的 gatewayHealth 块（后端被动统计 API 流量
+     来源 + install marker 现算，见 server/src/core/gateway-stats.ts）
+   - waiting：刚安装宽限（sacentry 同步周期最长约 30 分钟）；
+     suspected-unregistered：有直连 API 流量但零网关流量且超观察窗——
+     从飞牛桌面打开本应用将 404
+   - 关闭记忆按「状态值」记 sessionStorage（本次会话不再弹；状态升级会重新
+     出现）；每次页面加载刷新一次；ok/unknown 不展示；status 不可达时静默放弃
+   ============================================================ */
+async function initGatewayHealthBanner() {
+  const box = $('#gw-banner')
+  if (!box) return
+  let gh
+  try {
+    gh = (await api.status()).gatewayHealth
+  } catch {
+    return // 后端不可达/超时：诊断本身不该打扰使用，静默放弃
+  }
+  const st = gh && gh.status
+  if (st !== 'waiting' && st !== 'suspected-unregistered') return
+  try {
+    if (sessionStorage.getItem('rainbow.gw-banner-off') === st) return
+  } catch {
+    /* 隐私模式：无记忆，可关闭但刷新会重现 */
+  }
+  const waiting = st === 'waiting'
+  box.className = 'gw-banner' + (waiting ? ' gw-banner--waiting' : ' gw-banner--suspect')
+  box.innerHTML = `
+    <svg class="gwb-ico" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${
+      waiting
+        ? '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'
+        : '<path d="M12 3.5L2.5 20h19L12 3.5z"/><path d="M12 10v4"/><path d="M12 17.1v.01"/>'
+    }</svg>
+    <div class="gwb-body">
+      <div class="gwb-title">${waiting ? '正在等待飞牛系统完成网关注册' : '应用可能未注册到飞牛网关'}</div>
+      <div class="gwb-detail">${
+        waiting
+          ? '应用刚安装/升级，正在等待飞牛系统完成网关注册（最长约 30 分钟），请稍候……'
+          : '检测到应用可能未注册到飞牛网关——从飞牛桌面打开本应用将显示 404。全新安装后最长需等待约 30 分钟系统同步；若超时未恢复，请参考文档 docs/FNOS-FEEDBACK.md 或联系管理员。'
+      }</div>
+    </div>
+    <button class="gwb-close" type="button" aria-label="关闭提示" title="关闭（本次会话不再提示）">
+      <svg viewBox="0 0 12 12" width="11" height="11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg>
+    </button>`
+  box.querySelector('.gwb-close')?.addEventListener('click', () => {
+    box.hidden = true
+    try {
+      sessionStorage.setItem('rainbow.gw-banner-off', st)
+    } catch {
+      /* 隐私模式：仅本次消失 */
+    }
+  })
+  box.hidden = false
+}
+
 initAuth()
+initGatewayHealthBanner() // v0.2.12：网关注册诊断横幅（异步，不阻塞首屏）
 player.init() // 底部播放器（默认隐藏，本地收藏点 ▶ 后滑入）
 showTab('home') // #60：登录后默认落首页（热门歌单聚合）

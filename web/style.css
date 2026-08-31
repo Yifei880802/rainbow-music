@@ -528,6 +528,42 @@ input[type=checkbox]:checked::after {
   to { opacity: 1; transform: none; }
 }
 
+/* ---------- v0.2.12 网关注册诊断横幅（topbar 下全局条，不随 view 切换） ----------
+   waiting=刚安装宽限（中性暖调，时钟图标）；suspected=疑似未注册（警示黄调，
+   三角图标）。与 .src-warn-banner 同体系但独立命名空间（gwb-*），可关闭钮 */
+.gw-banner {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 16px;
+  margin: 14px 20px 0;
+  border-radius: var(--r-card);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid var(--brd);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 4px 14px rgba(0, 0, 0, .18);
+  animation: swb-in .35s cubic-bezier(.32, .72, .35, 1) both;
+}
+.gw-banner .gwb-ico { flex-shrink: 0; margin-top: 2px; }
+.gw-banner .gwb-title { font-size: 13.5px; font-weight: 600; letter-spacing: .2px; }
+.gw-banner .gwb-detail { margin-top: 3px; font-size: 12px; line-height: 1.55; color: var(--txt2); word-break: break-all; }
+.gw-banner .gwb-body { flex: 1; min-width: 0; }
+.gw-banner .gwb-close {
+  flex-shrink: 0; margin: 1px -4px 0 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;
+  border: 0; border-radius: var(--r-ctl);
+  background: transparent; color: var(--txt3); cursor: pointer;
+}
+.gw-banner .gwb-close:hover { background: var(--card-hi); color: var(--txt); }
+/* waiting：中性暖调（告知语义，不焦虑） */
+.gw-banner--waiting { background: rgba(255, 255, 255, .06); }
+.gw-banner--waiting .gwb-ico { color: var(--txt2); }
+.gw-banner--waiting .gwb-title { color: var(--txt); }
+/* suspected：警示黄调（--warn 体系，比 src-warn-banner 的红低一级——疑似非故障） */
+.gw-banner--suspect { background: rgba(224, 168, 0, .08); border-color: rgba(224, 168, 0, .25); }
+.gw-banner--suspect .gwb-ico { color: var(--warn); }
+.gw-banner--suspect .gwb-title { color: #f0c24a; }
+.gw-banner--suspect .gwb-detail { color: rgba(240, 194, 74, .78); }
+
 /* ---------- 平台分组 ---------- */
 .platform-group { margin-bottom: 22px; }
 .platform-group h3 {
