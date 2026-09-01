@@ -17,12 +17,17 @@ source "$(cd "$(dirname "$0")" && pwd)/_common"
 render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
 render_scan_mounts "${wizard_scan_dirs:-}"
 ensure_data_dirs
-# v0.2.12：安装时刻 marker（宿主 ${TRIM_PKGVAR}/data/install.marker，容器内
-# /app/data/install.marker 经 @appdata 挂载可读）——供运行时网关注册诊断区分
-# 「刚安装等待 sacentry 同步周期（≤30 分钟）」宽限期（waiting 态）。首行为 epoch
-# 秒（服务端解析），次行人类可读时间戳；升级不写（升级不重建 app_service 行，
-# 不影响注册语义）。写失败仅告警不阻断安装。
-printf '%s\n' "$(date +%s)" "$(date -Iseconds)" > "${TRIM_PKGVAR}/data/install.marker" 2>/dev/null \
+# v0.2.12：安装时刻 marker，供运行时网关注册诊断区分「刚安装等 sacentry
+# 同步周期（≤30 分钟）」宽限期（waiting 态）。
+# v0.2.13 路径修正（t111 实证 bug#1）：fnOS 仅挂载 data 的三个子目录
+# （downloads/sources/db）到容器，data 根目录不挂载 → marker 必须落在已挂载
+# 子目录 data/db/（容器内 /app/data/db/install.marker 可见；ensure_data_dirs
+# 已建该目录）。首行为 epoch 秒（服务端解析），次行人类可读时间戳。
+# 写入时机说明（t111 实证修正）：fnOS 手动升级链会同时跑 install_callback
+# 与 upgrade_callback（完整重装语义：app_service 行删除重建、entry 清空）
+# ——故升级也会写 marker，这是正确行为（网关重装后确实需重新等注册，
+# waiting 态在升级后同样应出现）。写失败仅告警不阻断安装。
+printf '%s\n' "$(date +%s)" "$(date -Iseconds)" > "${TRIM_PKGVAR}/data/db/install.marker" 2>/dev/null \
     || log_info "install marker 写入失败（不影响安装，仅诊断 waiting 态降级）"
 # v0.2.9：网关 socket DB 幂等补写（fnOS 手动安装链不写 gateway 字段的根治项；
 # 函数内部全容错恒 return 0，set -e 安全；fnOS 可能稍后才写 app_service 行，

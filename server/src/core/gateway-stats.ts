@@ -20,10 +20,14 @@
  *    大量请求，稀释信号且不反映 API 使用面；封面 /api/v1/cover 等 API 路由
  *    计入无妨；
  *  - TCP + 网关两实例共享同一份进程级内存计数（模块单例）；
- *  - install marker（fpk install_callback 写 ${TRIM_PKGVAR}/data/install.marker，
- *    容器内 /app/data/install.marker 经 @appdata 挂载可读）：stat mtime 缓存，
+ *  - install marker（fpk install_callback 写 ${TRIM_PKGVAR}/data/db/install.marker，
+ *    容器内 /app/data/db/install.marker —— data/db 是 compose 已挂载子目录：
+ *    t111 实证 fnOS 仅挂载 data 的三个子目录而非 data 根，v0.2.12 写 data 根
+ *    导致容器内不可见、waiting 态永不触发，v0.2.13 修正）：stat mtime 缓存，
  *    文件未变不重复读内容；读不到当不存在（非 fpk 部署/Docker 手动部署无此文件，
  *    recentlyInstalled 恒 false，仅影响 waiting 态判定，无其他副作用）。
+ *    t111 另实证 fnOS 手动升级链双跑 install/upgrade 回调（完整重装语义），
+ *    故升级后 marker 同样刷新——waiting 态在升级后正确出现。
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -92,15 +96,30 @@ export function createGatewayStatsHook(isGatewayInstance: boolean) {
   }
 }
 
-/** marker 路径：RO_INSTALL_MARKER 可覆盖（测试/非标准部署），默认项目根 data/ */
-function markerPath(): string {
-  return process.env.RO_INSTALL_MARKER ?? path.join(ROOT_DIR, 'data', 'install.marker')
+/** marker 候选路径（v0.2.13 双探测）：RO_INSTALL_MARKER 可覆盖（测试/非标准部署）。
+ *  首选 data/db/install.marker（compose 已挂载子目录，t111 实证 bug#1 修复主路径）；
+ *  兼容探测旧路径 data/install.marker（v0.2.12 写入点；fnOS 不挂载 data 根，容器内
+ *  实际不可见，探测无害——防未来 fnOS 挂载行为变化或非 fnOS 部署显式挂 data 根） */
+function markerPaths(): string[] {
+  if (process.env.RO_INSTALL_MARKER) return [process.env.RO_INSTALL_MARKER]
+  return [
+    path.join(ROOT_DIR, 'data', 'db', 'install.marker'),
+    path.join(ROOT_DIR, 'data', 'install.marker'),
+  ]
 }
 
 /** 读安装时刻（epoch ms）；格式 = install_callback 写入的「秒\nISO」两行，取首行 */
 function readInstallMarkerAt(): number | null {
   try {
-    const p = markerPath()
+    // 双路径探测：逐个 stat，第一个存在的胜出（新路径优先）
+    let p: string | null = null
+    for (const cand of markerPaths()) {
+      if (fs.existsSync(cand)) {
+        p = cand
+        break
+      }
+    }
+    if (p === null) return null
     const st = fs.statSync(p)
     if (markerCache && markerCache.path === p && markerCache.mtimeMs === st.mtimeMs) {
       return markerCache.at

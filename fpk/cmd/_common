@@ -286,11 +286,14 @@ rb_psql() {
     [ -x "$psqlbin" ] || { rb_psql_err="宿主 psql 缺失（${psqlbin}）"; return 1; }
     img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
     [ -n "$img" ] || { rb_psql_err="compose 未取到 image（${COMPOSE_FILE:-未设置}）"; return 1; }
-    # stderr 落临时文件：失败时取末行入 rb_psql_err（可观测），用完即删
+    # stderr 落临时文件：失败时取末行入 rb_psql_err（可观测），用完即删。
+    # v0.2.13：镜像名后补 -- 分隔符（t111 真机实证：紧跟镜像名的 --library-path
+    # 被 docker CLI 解析为自身选项 → unknown flag「Run 'docker run --help'」）；
+    # -- 之后全部作为 entrypoint（loader）参数传递，语义不变
     errf="/tmp/rb-psql-err.$$"
     if docker run --rm \
         -v /usr:/husr:ro -v /run:/hrun:ro \
-        --entrypoint "$loader" "$img" \
+        --entrypoint "$loader" "$img" -- \
         --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
         "$psqlbin" -h /hrun/postgresql -U postgres -d "$db" -Atc "$sql" 2>"$errf"; then
         rm -f "$errf" 2>/dev/null
@@ -392,6 +395,7 @@ wlog() {
 
 # SQL 执行：$1=库 $2=SQL；成功 rc=0、QOUT=psql stdout 末行；失败 rc≠0、WERR=stderr 末行
 # （不用命令替换调 q：子 shell 内的全局变量赋值回不到本层）
+# v0.2.13：镜像名后补 -- 分隔符（与 rb_psql 同步，t111 实证修复）
 QOUT=''
 WERR=''
 q() {
@@ -400,7 +404,7 @@ q() {
     qerrf="/tmp/rainbow-gw-qerr.$$"
     QOUT=$(docker run --rm \
         -v /usr:/husr:ro -v /run:/hrun:ro \
-        --entrypoint "$LOADER" "$IMG" \
+        --entrypoint "$LOADER" "$IMG" -- \
         --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
         "$PSQLBIN" -h /hrun/postgresql -U postgres -d "$1" -Atc "$2" 2>"$qerrf") || {
         WERR=$(tail -n 1 "$qerrf" 2>/dev/null)

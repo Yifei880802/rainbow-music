@@ -50,6 +50,10 @@ const PUBLIC_PATHS = new Set<string>([
   '/api/v1/auth/login',
   '/api/v1/auth/gateway-login',
   '/api/v1/auth/status',
+  // v0.2.13：运行时状态/诊断端点公开（t111 实证 bug#3：网关 404 时用户恰好走
+  // 直连查诊断，登录墙把诊断链入口挡住 → 401）。响应体仅计数与时间戳
+  // （version/uptime/node rss/sources/tasks/gatewayHealth），无敏感信息
+  '/api/v1/status',
   '/favicon.ico',
   '/favicon.png',
 ])

@@ -292,7 +292,7 @@ export async function fetchScrapeDetail(platform: string, musicInfo: MusicInfo):
  */
 const MB_MIN_INTERVAL_MS = 1100
 const MB_TIMEOUT_MS = 8000
-const MB_UA = 'Rainbow/0.2.12 ( https://github.com/Yifei880802/rainbow-music )'
+const MB_UA = 'Rainbow/0.2.13 ( https://github.com/Yifei880802/rainbow-music )'
 let mbNextAt = 0
 
 async function mbThrottle(): Promise<void> {
