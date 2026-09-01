@@ -286,20 +286,24 @@ rb_psql() {
     [ -x "$psqlbin" ] || { rb_psql_err="宿主 psql 缺失（${psqlbin}）"; return 1; }
     img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
     [ -n "$img" ] || { rb_psql_err="compose 未取到 image（${COMPOSE_FILE:-未设置}）"; return 1; }
-    # stderr 落临时文件：失败时取末行入 rb_psql_err（可观测），用完即删。
-    # v0.2.13：镜像名后补 -- 分隔符（t111 真机实证：紧跟镜像名的 --library-path
-    # 被 docker CLI 解析为自身选项 → unknown flag「Run 'docker run --help'」）；
-    # -- 之后全部作为 entrypoint（loader）参数传递，语义不变
+    # stderr 落临时文件：失败时压缩全文入 rb_psql_err（可观测），用完即删。
+    # v0.2.14（t114 纠偏）：撤销 v0.2.13 加的镜像名后 -- 分隔符——t114 三重复现
+    # 证伪（uid 0 对照：旧语法本就 rc=0 正常输出；带 -- 反被 docker 透传给
+    # loader 致 usage 错）；真因始终是回调 uid 975 连 docker.sock EACCES
+    # （t107/t114 实证），与语法无关。同时 stderr 从「tail -1 末行」改为
+    # 压缩全文（换行→" | "）：docker 多行错误的末行是 usage 提示，真实错误
+    # （EACCES）在第 2 行——末行截取曾致 t111/t114 两轮误诊（tail -1 陷阱）。
     errf="/tmp/rb-psql-err.$$"
     if docker run --rm \
         -v /usr:/husr:ro -v /run:/hrun:ro \
-        --entrypoint "$loader" "$img" -- \
+        --entrypoint "$loader" "$img" \
         --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
         "$psqlbin" -h /hrun/postgresql -U postgres -d "$db" -Atc "$sql" 2>"$errf"; then
         rm -f "$errf" 2>/dev/null
         return 0
     fi
-    rb_psql_err=$(tail -n 1 "$errf" 2>/dev/null)
+    # 压缩全文（awk，POSIX 可移植）：多行 stderr → 单行 " | " 分隔
+    rb_psql_err=$(awk 'NR>1 {printf " | "} {printf "%s", $0}' "$errf" 2>/dev/null)
     rm -f "$errf" 2>/dev/null
     [ -n "$rb_psql_err" ] || rb_psql_err="docker run 失败（stderr 空）"
     return 1
@@ -377,7 +381,8 @@ render_gateway_watch_script() {
 #   - 每轮查两表 gateway_socket 非空行数（c1/c2），逐轮写一行到 @LOG@
 #   - 双非空 → 已自愈，写退出行后干净退出
 #   - 否则两个幂等 UPDATE（仅空字段才补），updated=A/B 记录影响行数
-#   - docker/psql 失败不静默：stderr 末行写入日志（psql-err=...），本轮跳过继续
+#   - docker/psql 失败不静默：stderr 压缩全文写入日志（psql-err=...，v0.2.14：
+#     多行换行→" | "单行——末行截取曾致误诊，见 q 函数注），本轮跳过继续
 #   - 超时（10 分钟）写超时行后正常退出；EXIT trap 自删本文件
 #
 IMG='@IMG@'
@@ -393,9 +398,13 @@ wlog() {
     printf '%s %s\n' "$(date '+%F %T')" "$1" >> "$LOG" 2>/dev/null || true
 }
 
-# SQL 执行：$1=库 $2=SQL；成功 rc=0、QOUT=psql stdout 末行；失败 rc≠0、WERR=stderr 末行
+# SQL 执行：$1=库 $2=SQL；成功 rc=0、QOUT=psql stdout 末行；失败 rc≠0、WERR=stderr 压缩全文
 # （不用命令替换调 q：子 shell 内的全局变量赋值回不到本层）
-# v0.2.13：镜像名后补 -- 分隔符（与 rb_psql 同步，t111 实证修复）
+# v0.2.14（t114 纠偏）：撤销 v0.2.13 的镜像名后 -- 分隔符——t114 三重复现证伪
+# （uid 0 下旧语法本就 rc=0；-- 被 docker 透传给 ld-linux 致 usage 错；真因是
+# 回调 uid 975 连 docker.sock EACCES）；WERR 从「tail -1 末行」改为压缩全文
+# （换行→" | "）：docker 多行错误末行是 usage 提示（Run 'docker run --help'），
+# 真实错误（EACCES）在第 2 行——末行截取曾致 t111 误诊（tail -1 陷阱）
 QOUT=''
 WERR=''
 q() {
@@ -404,10 +413,11 @@ q() {
     qerrf="/tmp/rainbow-gw-qerr.$$"
     QOUT=$(docker run --rm \
         -v /usr:/husr:ro -v /run:/hrun:ro \
-        --entrypoint "$LOADER" "$IMG" -- \
+        --entrypoint "$LOADER" "$IMG" \
         --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
         "$PSQLBIN" -h /hrun/postgresql -U postgres -d "$1" -Atc "$2" 2>"$qerrf") || {
-        WERR=$(tail -n 1 "$qerrf" 2>/dev/null)
+        # 压缩全文（awk，POSIX sh 可移植）：多行 stderr → 单行 " | " 分隔
+        WERR=$(awk 'NR>1 {printf " | "} {printf "%s", $0}' "$qerrf" 2>/dev/null)
         rm -f "$qerrf"
         return 1
     }

@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.13
+version=0.2.14
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 source=thirdparty
@@ -14,4 +14,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=t111 真机验证三缺陷修复：install.marker 移至已挂载子目录 data/db（fnOS 仅挂载 data 三个子目录，data 根容器不可见致 waiting 态永不触发）；rb_psql/watcher 的 docker run 镜像名后补 -- 分隔符（修 --library-path 被当 docker 选项）；/api/v1/status 加入鉴权白名单（直连诊断入口 401 缺口）。行为实证回填：fnOS 手动升级=完整重装链（install/upgrade 双跑，升级后 waiting 态正确出现）
+changelog=撤销 v0.2.13 误诊修复：rb_psql/watcher 的 docker run 撤销镜像名后 -- 分隔符（t114 三重复现证伪——uid 0 下旧语法本就可用、-- 反被透传给 loader 致败；真因是回调 uid 975 连 docker.sock EACCES）；wlog/rb_psql_err 从 stderr 末行改为压缩全文（修 tail -1 取证陷阱：docker 多行错误末行是 usage 提示，真实 EACCES 在第 2 行）。t114 回填：bug#1 waiting 态达成、bug#3 未登录直连 200、升级=完整重装链再实证

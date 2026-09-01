@@ -673,7 +673,7 @@ es.addEventListener('task:completed', e => console.log('完成', JSON.parse(e.da
 **响应 200**：
 ```json
 {
-  "app": "ro", "version": "0.2.13", "uptimeSec": 3600,
+  "app": "ro", "version": "0.2.14", "uptimeSec": 3600,
   "node": "v22.x.x", "memoryMB": 198,
   "sources": { "loaded": 1, "ready": 1 },
   "tasks": { "pending": 0, "active": 1, "completed": 12, "failed": 0 },
