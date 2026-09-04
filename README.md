@@ -66,11 +66,11 @@
 appcenter-cli install-fpk rainbow-0.2.0-r1.fpk
 ```
 
-> `.fpk` 内部以 Docker 容器运行 Rainbow，镜像 tag 与包版本严格绑定（如 `v0.2.0-r1`），不使用 `latest`，升级行为完全可预期。
+> `.fpk` 内部以 Docker 容器运行 Rainbow，镜像 tag 与包版本严格绑定（如 `v0.2.0-r1`），不使用 `latest`；CI 产出的正式包还会把镜像 digest 一并钉进 compose（形如 `<image>:<tag>@<digest>`），即使 tag 被重推也只会拉到打包时那一个镜像，升级行为完全可预期。
 
 ### 方式二：Docker 手动部署（ARM 用户兜底）
 
-若 `.fpk` 在你的环境暂不可用（如部分 ARM 机型应用中心限制），可直接用 Docker Compose 部署同一镜像：
+若 `.fpk` 在你的环境暂不可用（如部分 ARM 机型应用中心限制），可直接用 Docker Compose 部署同一镜像。手动部署**按 tag 拉取即可**：digest 是 CI 打包那一刻才知道的值，用户侧无法预知，也不必去猜；只要 tag 没被重推，两种方式拉到的是同一个镜像。
 
 ```yaml
 # compose.yaml
@@ -144,7 +144,7 @@ location / {
 ```
 
 **Q: 容器起不来 / 镜像拉取失败？**
-A: 先 `docker logs rainbow`（或 FnOS 应用详情页的日志面板）看具体报错；拉取失败常见原因是网络不通或 tag 写错——镜像 tag 必须与 `.fpk` 版本一致（如 `v0.2.0-r1`），不存在 `latest` 标签。
+A: 先 `docker logs rainbow`（或 FnOS 应用详情页的日志面板）看具体报错；拉取失败常见原因是网络不通或 tag 写错——镜像 tag 必须与 `.fpk` 版本一致（如 `v0.2.0-r1`），不存在 `latest` 标签。若你在手动部署时自己加了 `@sha256:…` 后缀，注意那必须是**多架构 index** digest：写成单平台 digest 会让另一种架构的机器拉到跑不起来的镜像。官方 `.fpk` 里的 digest 由 CI 自动取自刚推送的镜像，不需要你手填。
 
 **Q: 升级会不会丢数据？**
 A: 不会。音乐文件、音源脚本、SQLite 任务/歌单记录全部在宿主机挂载卷（`data/downloads`、`data/sources`、`data/db`）与 `config.yaml` 中，镜像本身不含任何数据。升级 = 换新版 `.fpk`（或 compose 中改 image tag 后 `docker compose up -d`），数据原样保留。
@@ -180,6 +180,7 @@ npm run typecheck && npm run build
 docker compose build && docker compose up -d
 
 # 打包 .fpk（产物：dist-fpk/rainbow-${FPK_VERSION}.fpk）
+# 本地不传 FPK_IMAGE_DIGEST：没推送过的镜像没有 registry digest，digest pin 仅由 CI 注入
 FPK_VERSION=0.2.0-r1 \
 FPK_IMAGE=ghcr.io/<owner>/rainbow-music \
 FPK_IMAGE_TAG=v0.2.0-r1 \

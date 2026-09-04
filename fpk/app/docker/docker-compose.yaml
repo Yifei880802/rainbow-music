@@ -1,5 +1,9 @@
 services:
   rainbow:
+    # image 引用由 scripts/build-fpk.sh 渲染：CI 注入 FPK_IMAGE_DIGEST 时钉成
+    # <image>:<tag>@<digest>（digest 决定实际拉取，tag 仅供本地 docker images 阅读），
+    # 本地打包没有 registry digest，渲染为纯 <image>:<tag>。
+    # 渲染时组合占位必须先于单独占位替换，顺序调换会让 digest pin 静默失效。
     image: __FPK_IMAGE__:__FPK_IMAGE_TAG__
     container_name: rainbow
     restart: unless-stopped

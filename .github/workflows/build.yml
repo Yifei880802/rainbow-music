@@ -7,8 +7,12 @@
 # 版本契约：
 #   - tag = vX.Y.Z-rN（rN 为修订号；禁止 latest）
 #   - 镜像 tag 与 fpk compose 中的 tag 严格一致
-#   - scripts/build-fpk.sh 读取 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG，
+#   - scripts/build-fpk.sh 读取 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST，
 #     产物输出至 dist-fpk/rainbow-${FPK_VERSION}.fpk
+#   - digest pin：docker 作业把推送后的多架构 index digest 作为作业输出传给 fpk 作业，
+#     fpk 内 compose 的 image 因此渲染为 <image>:<tag>@<digest>，发布产物被钉死在
+#     CI 实际推送的那个 index 上；tag 事后被重推也不会让已发布的 fpk 拉到别的镜像。
+#     digest 取不到时 docker 作业直接失败——静默退回纯 tag 引用等于悄悄撤销 pin
 #   - fnpack 官方二进制在 fpk 作业中尝试下载（直链见下），以 FNPACK_BIN 注入
 #     build-fpk.sh 走官方打包路径；下载失败不中断流水线，build-fpk.sh
 #     自行降级为手工 tar 组装（与脚本既有降级语义一致）
@@ -91,6 +95,9 @@ jobs:
     name: 构建 amd64+arm64 镜像并推送 GHCR
     needs: [meta, build]
     runs-on: ubuntu-latest
+    outputs:
+      # 多架构 index digest（不是单平台 digest），fpk 作业据此钉死 compose 的 image 引用
+      image_digest: ${{ steps.push.outputs.image_digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -102,18 +109,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: 构建并推送（amd64 + arm64）
+        id: push
         env:
           IMAGE: ${{ needs.meta.outputs.image }}
           IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
         run: |
+          set -euo pipefail
+          META_JSON="$RUNNER_TEMP/buildx-meta.json"
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --file Dockerfile \
             --tag "${IMAGE}:${IMAGE_TAG}" \
+            --metadata-file "$META_JSON" \
             --push .
+          # 多平台 push 下 containerimage.digest 即 index digest。这是 fpk 里 digest pin
+          # 的唯一来源，取不到就必须让流水线红掉：静默退回纯 tag 引用等于悄悄撤销 pin，
+          # 而且失败会一路带到已发布的 Release 上，事后极难发现。
+          DIGEST="$(jq -r '."containerimage.digest" // ."containerimage.descriptor".digest // empty' "$META_JSON")"
+          if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::未能从 buildx metadata 取得合法 index digest（实际得到：'${DIGEST}'），拒绝继续打包未钉死的 fpk"
+            echo "--- buildx metadata 全文 ---"; cat "$META_JSON"
+            exit 1
+          fi
+          echo "image_digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "[docker] 已推送 index digest = ${DIGEST}"
 
   # ─────────────────────────────────────────────
-  # ④ 组装 .fpk（依赖镜像已推送：fpk compose 直接引用该 tag）
+  # ④ 组装 .fpk（依赖镜像已推送：fpk compose 引用该 tag 并 pin 其 index digest）
   #    先尝试下载官方 fnpack（linux 直链）注入 FNPACK_BIN；
   #    下载失败不中断流水线，build-fpk.sh 内部走降级组装路径
   # ─────────────────────────────────────────────
@@ -146,6 +168,7 @@ jobs:
           FPK_VERSION: ${{ needs.meta.outputs.version }}
           FPK_IMAGE: ${{ needs.meta.outputs.image }}
           FPK_IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+          FPK_IMAGE_DIGEST: ${{ needs.docker.outputs.image_digest }}
         run: |
           chmod +x scripts/build-fpk.sh
           scripts/build-fpk.sh

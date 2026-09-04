@@ -114,6 +114,7 @@ web/
   | `FPK_VERSION` | fpk 版本号（不带 v） | `0.2.0-r1` |
   | `FPK_IMAGE` | 镜像名 | `ghcr.io/<owner>/rainbow-music` |
   | `FPK_IMAGE_TAG` | 镜像 tag，**必须与已推送镜像一致** | `v0.2.0-r1` |
+  | `FPK_IMAGE_DIGEST` | 可选。镜像的**多架构 index digest**；给了就把 compose 的 image 钉成 `<image>:<tag>@<digest>`。本地构建但没推送过的镜像不存在 registry digest，所以这个值**只能由 CI 注入** | `sha256:30acda7e…` |
 
   产物：`dist-fpk/rainbow-${FPK_VERSION}.fpk`。fnpack 二进制不可得时脚本自动走**降级组装路径**（下载失败时的 CI 兜底即此路径）。
   
@@ -121,6 +122,8 @@ web/
   - **CI 侧 fnpack 集成**：`build.yml` 的 fpk 作业在调 `build-fpk.sh` 前先从官方直链 `https://static2.fnnas.com/fnpack/fnpack-1.2.3-linux-amd64` 下载二进制（按 runner 架构选 amd64/arm64），`chmod +x` 后以 `FNPACK_BIN` 注入走官方打包路径；下载失败**不中断流水线**，`build-fpk.sh` 自动降级为手工 tar 组装并输出 `::warning::` 醒目提示（与脚本既有降级语义一致）。
 
 - **版本策略**：tag = `vX.Y.Z-rN`（rN 为打包修订号：同一应用版本换包/修包递增）。镜像 tag 与 fpk compose 中的 tag **逐字符一致**，全程禁用 `latest`，保证升级/回滚行为确定。
+  - **digest pin**：正式发布时 compose 里的引用还会额外钉上 index digest，形如 `<image>:<tag>@<digest>`。digest 决定实际拉哪个镜像，tag 被重推也拉不到别的东西；tag 同时保留，`docker images` 里仍有可读标签。必须钉 **index** digest（`application/vnd.oci.image.index.v1+json`）而非单平台 digest，否则 arm64 用户会被静默拉到 amd64 镜像。
+  - digest 由 CI 的 docker 作业从 buildx `--metadata-file` 读出（多平台 `--push` 下 `containerimage.digest` 即 index digest），经作业 `outputs` 传给 fpk 作业。读不到合法值就**让流水线红掉**：静默退回纯 tag 引用等于悄悄撤销 pin，而且会一路带到已发布的 Release 上，事后极难发现。这与 fnpack 下载失败可降级的语义**故意不同**。
 
 本地打包：
 
@@ -130,6 +133,8 @@ FPK_IMAGE=ghcr.io/<owner>/rainbow-music \
 FPK_IMAGE_TAG=v0.2.0-r1 \
 scripts/build-fpk.sh
 ```
+
+本地不传 `FPK_IMAGE_DIGEST`——没推送过的镜像没有 registry digest。因此本地产物恒为纯 tag 引用，仅供验证，不代表正式发布的形态。
 
 ---
 
@@ -218,7 +223,7 @@ push tag v*（或 workflow_dispatch 输入 version）
 | meta | `meta` | 版本校验（正则 `^[0-9]+\.[0-9]+\.[0-9]+(-r[0-9]+)?$`，与 workflow 一致）并推导 `image_tag=v${VERSION}` |
 | build | `build` | `cd server && npm ci`（仅 node_modules 缺失时）`&& npm run typecheck && npm run build` |
 | docker | `docker` | `docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .`（本地只 load 不推送） |
-| fpk | `fpk` | 注入 `FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG` 调 `scripts/build-fpk.sh`，解包产物（兼容 fnpack 官方 app.tgz 结构与降级 tar 结构），程序化比对 compose 内 image 与预期 tag 逐字符一致，输出 `TAG_CONSISTENCY_PASS/FAIL` |
+| fpk | `fpk` | 注入 `FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG`（及可选的 `FPK_IMAGE_DIGEST`）调 `scripts/build-fpk.sh`，解包产物（兼容 fnpack 官方 app.tgz 结构与降级 tar 结构），程序化比对 compose 内 image 与**预期引用**逐字符一致（给了 digest 则预期引用带 `@<digest>` 后缀），输出 `TAG_CONSISTENCY_PASS/FAIL`；另按是否传 digest 打印 `DIGEST_PIN_PASS` / `DIGEST_PIN_SKIP` 可读标记 |
 
 用法：
 
@@ -229,6 +234,8 @@ scripts/verify-ci.sh --platform linux/amd64     # 指定构建平台
 VERSION=0.2.0-r1 scripts/verify-ci.sh           # 指定版本（默认取 fpk/manifest 的 version）
 ```
 
-环境变量：`VERSION`（可选）、`FPK_IMAGE`（默认 `rainbow-music`；正式发布时 workflow 注入 `ghcr.io/<owner>/rainbow-music`，本地门禁建议显式传同一全名以校验最终镜像串）、`FNPACK_BIN`（可选；缺失时 `build-fpk.sh` 自动降级为手工 tar 组装并打印降级警示，降级产物仅供本地验证）。
+环境变量：`VERSION`（可选）、`FPK_IMAGE`（默认 `rainbow-music`；正式发布时 workflow 注入 `ghcr.io/<owner>/rainbow-music`，本地门禁建议显式传同一全名以校验最终镜像串）、`FPK_IMAGE_DIGEST`（可选；必须为 `sha256:` + 64 位小写 hex，格式非法在进作业链**之前**就报错退出——否则报错点会落到 `build-fpk.sh`，离门禁结论很远）、`FNPACK_BIN`（可选；缺失时 `build-fpk.sh` 自动降级为手工 tar 组装并打印降级警示，降级产物仅供本地验证）。
 
-注意：docker 段不可用时报 FAIL 并提示 `colima start`；fpk 段产物落在 `dist-fpk/`，与正式发布共用目录，注意勿覆盖他人产物。
+注意：docker 段不可用时报 FAIL 并提示 `colima start`；fpk 段产物落在 `dist-fpk/`，与正式发布共用目录，注意勿覆盖他人产物（要隔离就传 `FPK_OUT_DIR`）。
+
+门禁盲区（已知，勿误信）：fpk 段比对的「预期引用」与实际 compose 内容**同源于 `FPK_IMAGE_DIGEST` 这一个环境变量**，所以它只能证明 digest 钉对了格式与位置，证明不了这个 digest 真指向正确镜像。真正的防线是 CI 里该值取自 docker 作业刚推送镜像的 buildx metadata，全程不经人手。同理，digest pin 也尚未通过真机 fnOS 安装/升级门禁验证。

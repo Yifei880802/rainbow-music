@@ -6,8 +6,9 @@
 #   a. meta   ：版本校验（正则与 workflow meta 一致）并推导 image_tag=v${VERSION}
 #   b. build  ：cd server && npm ci（仅 node_modules 缺失时）&& npm run typecheck && npm run build
 #   c. docker ：docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .（可 --skip-docker 跳过）
-#   d. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG 调 scripts/build-fpk.sh，
-#               解包产物并程序化校验 compose 内 image 与 ${FPK_IMAGE}:${image_tag} 逐字符一致
+#   d. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST 调
+#               scripts/build-fpk.sh，解包产物并程序化校验 compose 内 image 与预期引用
+#               （${FPK_IMAGE}:${image_tag}；给了 digest 则为 …@${FPK_IMAGE_DIGEST}）逐字符一致
 #
 # 用法示例：
 #   scripts/verify-ci.sh                            # 全量门禁（需 docker/buildx 可用，默认 linux/arm64）
@@ -22,6 +23,10 @@
 #   --skip-docker  跳过 docker 段（该段记为 SKIP，不影响最终结论）
 #   --platform   buildx 目标平台，默认 linux/arm64
 #   FPK_IMAGE    镜像名，默认 rainbow-music（本地门禁用短名即可；正式发布时 workflow 注入 ghcr.io/<owner>/rainbow-music）
+#   FPK_IMAGE_DIGEST  可选。镜像 index digest（sha256:<64 位小写 hex>）。提供时预期引用变为
+#                <镜像>:<tag>@<digest>，仍由 TAG_CONSISTENCY 逐字符校验，另打印
+#                DIGEST_PIN_PASS 便于在 CI 日志里检索；格式非法在进作业链前即拦下。
+#                正式发布由 CI 注入；本地门禁通常留空，产物为纯 tag 引用（DIGEST_PIN_SKIP）
 #   FNPACK_BIN   可选。显式指定 fnpack 可执行文件；未提供且 PATH 无 fnpack 时，
 #                build-fpk.sh 自动降级为手工 tar 组装并打印降级警示（降级产物仅供本地验证）
 #
@@ -72,7 +77,7 @@ trap cleanup EXIT INT TERM
 
 # ─────────────────────────── 参数解析 ───────────────────────────
 
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
 
 SKIP_DOCKER=0
 PLATFORM="linux/arm64"
@@ -97,7 +102,14 @@ done
 
 FPK_IMAGE="${FPK_IMAGE:-rainbow-music}"
 FNPACK_BIN="${FNPACK_BIN:-}"
-export FPK_IMAGE FNPACK_BIN
+FPK_IMAGE_DIGEST="${FPK_IMAGE_DIGEST:-}"
+export FPK_IMAGE FNPACK_BIN FPK_IMAGE_DIGEST
+
+# digest 格式在进作业链前就拦：格式非法时 build-fpk.sh 也会失败，但报错点离门禁结论很远
+if [[ -n "$FPK_IMAGE_DIGEST" && ! "$FPK_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log "错误：FPK_IMAGE_DIGEST 格式非法（要求 sha256:<64 位小写 hex>）：'$FPK_IMAGE_DIGEST'"
+    exit 1
+fi
 
 # ─────────────────────────── a. meta ───────────────────────────
 # 对应 workflow job「meta：解析版本号」
@@ -173,7 +185,7 @@ stage_fpk() {
 
     export FPK_VERSION="$VERSION"
     export FPK_IMAGE_TAG="$IMAGE_TAG"
-    log "注入 FPK_VERSION=$FPK_VERSION FPK_IMAGE=$FPK_IMAGE FPK_IMAGE_TAG=$FPK_IMAGE_TAG"
+    log "注入 FPK_VERSION=$FPK_VERSION FPK_IMAGE=$FPK_IMAGE FPK_IMAGE_TAG=$FPK_IMAGE_TAG FPK_IMAGE_DIGEST=${FPK_IMAGE_DIGEST:-<未设置>}"
 
     # build-fpk.sh 契约：info 全部走 stderr，stdout 最后一行 = 产物绝对路径
     if ! fpk_path="$(bash "$REPO_ROOT/scripts/build-fpk.sh")"; then
@@ -204,8 +216,11 @@ stage_fpk() {
     compose="$(find "$TMP_EXTRACT" -type f -path '*docker/docker-compose.y*ml' | head -n1)"
     [[ -n "$compose" ]] || { log "错误：解包产物中找不到 app/docker/docker-compose.y*ml"; return 1; }
 
-    # compose 内 image 与预期值逐字符比对
+    # compose 内 image 与预期引用逐字符比对；给了 digest 则预期引用带 @<digest> 后缀
     expected="${FPK_IMAGE}:${IMAGE_TAG}"
+    if [[ -n "$FPK_IMAGE_DIGEST" ]]; then
+        expected="${expected}@${FPK_IMAGE_DIGEST}"
+    fi
     actual="$(grep -E '^[[:space:]]*image:' "$compose" | head -n1 \
         | sed -E 's/^[[:space:]]*image:[[:space:]]*//' \
         | tr -d '"' | tr -d "'" | tr -d '[:space:]')"
@@ -214,8 +229,17 @@ stage_fpk() {
     if [[ "$actual" == "$expected" ]]; then
         log "${C_GREEN}${C_BOLD}TAG_CONSISTENCY_PASS${C_NC}"
     else
-        log "${C_RED}${C_BOLD}TAG_CONSISTENCY_FAIL${C_NC}：compose 内 image 与 ${FPK_IMAGE}:${IMAGE_TAG} 不一致"
+        log "${C_RED}${C_BOLD}TAG_CONSISTENCY_FAIL${C_NC}：compose 内 image 与预期引用 '$expected' 不一致"
         return 1
+    fi
+
+    # digest pin 标记。这里只做可读标记、不再加断言：expected 已含 @digest，
+    # 上面的 TAG_CONSISTENCY 通过即等价于「钉对了」，失败即等价于「没钉上或钉错了」，
+    # 两种情形都已实测会 FAIL（含模板被写死 digest 的场景），再加判据只是死代码。
+    if [[ -n "$FPK_IMAGE_DIGEST" ]]; then
+        log "${C_GREEN}${C_BOLD}DIGEST_PIN_PASS${C_NC}：compose 已钉 index digest ${FPK_IMAGE_DIGEST}"
+    else
+        log "${C_YELLOW}DIGEST_PIN_SKIP${C_NC}：未提供 FPK_IMAGE_DIGEST，compose 为纯 tag 引用（本地门禁的正常形态，正式发布由 CI 注入）"
     fi
 
     # 附加校验：manifest version 应为剥离 -rN 后的纯 X.Y.Z

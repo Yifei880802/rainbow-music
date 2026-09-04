@@ -10,6 +10,13 @@
 #   FPK_IMAGE      镜像仓库地址，默认 ghcr.io/OWNER/rainbow-music
 #   FPK_IMAGE_TAG  镜像 tag，默认 v${FPK_VERSION}
 #                  注意：必须与 registry 实际 push 的 tag 完全一致，否则飞牛拉镜像失败
+#   FPK_IMAGE_DIGEST  可选。镜像 index 的 registry digest（sha256:<64 位小写 hex>）。
+#                  提供时 compose 的 image 渲染为 <IMAGE>:<TAG>@<DIGEST>，把发布产物钉死
+#                  在 CI 实际推送的那个 index 上——即使 tag 事后被重推，也拉不到别的镜像。
+#                  只能由 CI 注入：本地构建的镜像从未 push，没有 registry digest，
+#                  留空则退回纯 tag 引用（本地闸门产物行为完全不变）。
+#                  注意：必须填多架构 index digest，不能填单平台 digest，
+#                  否则 arm64 用户会被钉到 amd64 镜像上。
 #   FPK_OUT_DIR    输出目录，默认 dist-fpk
 #   FNPACK_BIN     显式指定 fnpack 可执行文件路径（可选）
 #
@@ -38,6 +45,7 @@ MANIFEST_VERSION=$(grep '^version=' "$FPK_SRC/manifest" | head -n1 | cut -d= -f2
 FPK_VERSION="${FPK_VERSION:-$MANIFEST_VERSION}"
 FPK_IMAGE="${FPK_IMAGE:-ghcr.io/OWNER/rainbow-music}"
 FPK_IMAGE_TAG="${FPK_IMAGE_TAG:-v${FPK_VERSION}}"
+FPK_IMAGE_DIGEST="${FPK_IMAGE_DIGEST:-}"
 FPK_OUT_DIR="${FPK_OUT_DIR:-$REPO_ROOT/dist-fpk}"
 
 # 与 CI tag 契约一致：X.Y.Z 或 X.Y.Z-rN（rN 为修订号）
@@ -48,7 +56,20 @@ fi
 # 飞牛 manifest version 字段官方要求纯 X.Y.Z：剥离 -rN 后缀（产物文件名仍带完整版本）
 MANIFEST_VERSION_RENDER="${FPK_VERSION%%-r*}"
 
-info "version=$FPK_VERSION image=${FPK_IMAGE}:${FPK_IMAGE_TAG}"
+# digest 要么不给，要么必须是合法 sha256。半截 digest 会让飞牛在安装期拉镜像失败，
+# 失败点远离打包现场、排查成本高，因此在打包前就拒绝
+if [ -n "$FPK_IMAGE_DIGEST" ] && ! [[ "$FPK_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    err "FPK_IMAGE_DIGEST 格式非法（要求 sha256:<64 位小写 hex>）：'$FPK_IMAGE_DIGEST'"
+fi
+
+# compose 的 image 引用：给了 digest 就钉成 <image>:<tag>@<digest>。
+# tag 保留 → 镜像拉下来仍有可读 tag；digest 生效 → tag 被重推也拉不到别的镜像
+IMAGE_REF="${FPK_IMAGE}:${FPK_IMAGE_TAG}"
+if [ -n "$FPK_IMAGE_DIGEST" ]; then
+    IMAGE_REF="${IMAGE_REF}@${FPK_IMAGE_DIGEST}"
+fi
+
+info "version=$FPK_VERSION image=${IMAGE_REF}"
 
 # ---------- 2. 暂存目录 + 渲染 ----------
 
@@ -64,7 +85,10 @@ rm -f "$STAGE/manifest.bak"
 # 注入镜像占位（历史坑：compose 的 image tag 必须与仓库实际 tag 完全一致）
 COMPOSE_FILE="$STAGE/app/docker/docker-compose.yaml"
 [ -f "$COMPOSE_FILE" ] || err "找不到 $COMPOSE_FILE"
+# 组合占位必须先替换、单独占位后替换：顺序反了 __FPK_IMAGE__ 会先被吃掉，
+# 组合形式永远匹配不上，digest pin 静默失效
 sed -i.bak \
+    -e "s|__FPK_IMAGE__:__FPK_IMAGE_TAG__|${IMAGE_REF}|" \
     -e "s|__FPK_IMAGE__|${FPK_IMAGE}|" \
     -e "s|__FPK_IMAGE_TAG__|${FPK_IMAGE_TAG}|" \
     "$COMPOSE_FILE"
