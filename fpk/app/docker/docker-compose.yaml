@@ -33,9 +33,14 @@ services:
     volumes:
       # 配置文件：由 install_callback 从安装向导渲染，落在飞牛托管的 etc 目录
       - ${TRIM_PKGETC}/config.yaml:/app/config.yaml
-      # 下载目录：config.yaml 内 download.dir 可指向 data-share 共享目录 rainbow-music，
-      # 容器内统一挂载到 /app/data/downloads（bind mount 会落到宿主机真实目录）
-      - ${TRIM_PKGVAR}/data/downloads:/app/data/downloads
+      # 下载目录（v0.2.15）：挂载 fnOS 托管的 data-share 共享目录 rainbow-music
+      # （fpk/config/resource 已声明），下载文件可直接在飞牛文件管理器查看。
+      # 源用卷号无关的稳定软链 /var/apps/com.rainbow.music/shares/rainbow-music
+      # （fnOS 维护，→ @appshare/rainbow-music），不硬编码 /volN。容器内路径恒为
+      # /app/data/downloads；config.yaml 的 download.dir 保持相对值 data/downloads 不变。
+      # 本行必须留在包内 compose 模板——fnOS 从内部保存的模板运行，回调期动态渲染的
+      # 挂载行不会被采用（见 docs/FNOS-DEPLOY.md）。
+      - /var/apps/com.rainbow.music/shares/rainbow-music:/app/data/downloads
       # 音源脚本目录（lx-music .js 音源）
       - ${TRIM_PKGVAR}/data/sources:/app/data/sources
       # SQLite 数据库目录（任务记录/歌单），升级不丢数据

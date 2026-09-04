@@ -46,6 +46,19 @@ rb_step "03-source"
 mkdir -p "${TRIM_PKGVAR}/data/downloads" "${TRIM_PKGVAR}/data/sources" "${TRIM_PKGVAR}/data/db" 2>/dev/null || true
 rb_step "04-dirs"
 
+# v0.2.15：data-share 软链只读诊断（下载挂载源 /var/apps/.../shares/rainbow-music）——
+# 记录状态供升级后取证，恒 return 0 不阻断；独立 probe 步骤便于失败定位
+check_data_share_link || rb_step "04b-sharelink-FAILED"
+rb_step "04b-sharelink"
+
+# v0.2.15：收敛遗留 download.dir。老现场（旧 USER-GUIDE 的建议或已撤销的
+# wizard_download_dir 输入框）把宿主绝对路径写进 download.dir，而 .fpk 只挂载包内
+# compose 模板声明的目录 → 该路径在容器内不是挂载点，下载落进可写层、容器重建即丢。
+# 本回调原先完全不碰 config.yaml，只改 compose 挂载修不了老现场；改前自动备份原配置，
+# 函数恒 return 0 不阻断升级
+normalize_download_dir || rb_step "04c-normalize-ddir-FAILED"
+rb_step "04c-normalize-ddir"
+
 # 扫描挂载渲染（幂等；fnOS 已剥离 RO_SCAN_ROOTS 行时 sed 无匹配静默通过，
 # 服务端对 env 缺失兜底为默认下载目录，行为一致）
 render_scan_mounts || rb_step "05-render-FAILED"

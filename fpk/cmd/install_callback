@@ -14,8 +14,16 @@ set -eu
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "$0")" && pwd)/_common"
 
-render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
+# v0.2.15：不再读取 wizard_download_dir——download.dir 恒为相对 data/downloads
+# （第三参传空，render_config 内部回落 default_download_dir），下载目录固定挂载 data-share
+render_config "${wizard_password:-}" "${wizard_port:-}" ""
+# v0.2.15：render_config 幂等（config.yaml 已存在即跳过），老现场遗留的 download.dir
+# 需单独收敛——fnOS 手动升级链会带空向导参数重跑本回调，正是收敛老配置的入口。
+# 恒 return 0，set -eu 安全
+normalize_download_dir
 render_scan_mounts "${wizard_scan_dirs:-}"
+# v0.2.15：data-share 软链只读诊断（下载挂载源），恒 return 0 不阻断安装
+check_data_share_link
 ensure_data_dirs
 # v0.2.12：安装时刻 marker，供运行时网关注册诊断区分「刚安装等 sacentry
 # 同步周期（≤30 分钟）」宽限期（waiting 态）。

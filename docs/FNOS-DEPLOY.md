@@ -1,4 +1,4 @@
-# Rainbow fnOS 部署指南（v0.2.14）
+# Rainbow fnOS 部署指南（v0.2.15）
 
 面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
@@ -12,6 +12,7 @@
 - [v0.2.6 网关就绪修复：service_port=0 与 checkport=false](#v026-网关就绪修复service_port0-与-checkportfalse)
 - [v0.2.7/v0.2.8 网关 404 第三层根因：数据库 socket 字段为空与 DB 热修](#v027v028-网关-404-第三层根因数据库-socket-字段为空与-db-热修)
 - [2026-08-28 音源清空与下载目录断裂：根因与热修](#2026-08-28-音源清空与下载目录断裂根因与热修)
+- [v0.2.15 下载目录挂载 data-share 与运维迁移](#v0215-下载目录挂载-data-share-与运维迁移)
 - [安装向导：「音乐库扫描目录」配置与挂载机制](#安装向导音乐库扫描目录配置与挂载机制)
 - [X-Trim-* 身份头安全模型](#x-trim--身份头安全模型)
 - [错误码与降级行为](#错误码与降级行为)
@@ -163,6 +164,7 @@ WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Applicati
    **两个行为实证（t111，重要语义）**：① fnOS 手动升级 = 完整重装链——手动上传 fpk「更新」时 install_callback 与 upgrade_callback 双跑（gateway-watch.log 双份步骤标记）、app_service 行删除重建（85→86→87）、entry 清空重建——升级与全新安装对 DB/数据面冲击等价，故升级后 marker 正确刷新、waiting 态正确出现（v0.2.12 的「升级不写」假设被推翻）；② fnos-gateway stale upstream——卸载/重装/两表清空均不使网关内存路由失效（重装后两表空时网关仍 200），「全新安装→网关 404」仅网关进程重启后出现；suspected 判定（零网关流量+运行>10min）在 stale upstream 期间是「DB 层未注册」的真信号，网关重启即 404，语义仍成立。取证存档：.qa-tmp/t111/（截图 docs/screenshots/nas-v0.2.12-*.png）。后续留待：fnOS 官方修复响应、商店上架评估（fygo 实证商店链正确写入 gateway 字段）、路径②重装实证；
    **v0.2.13 真机实测记录（2026-09-01，t114）**：三缺陷修复验证——bug#1 ✅ 修复有效（marker 落 data/db/ 容器可见，installMarkerAt=安装时刻，状态机 waiting 态达成并出现前端横幅，v0.2.12 时不可达）；bug#3 ✅ 修复有效（未登录直连 GET /api/v1/status → 200）；bug#2 ❌ 修复无效且方向错误（watcher 20 轮 psql-err 仍全部 usage 错，三重复现见下）。waiting→heal→ok 完整迁移时刻：16:13:16 marker 写入 data/db/ → 16:15:28 waiting（gwReq=0，防污染未触网关）→ 16:28:12 heal 热修两表（UPDATE 各 1 行）→ 16:31:05 sacentry 周期刷新 entry → 16:41 ok（gwReq 7→18）→ E2E 31MB flac 落盘、任务库 completed=2/failed=0；升级=完整重装链再实证（SVC id 87→88、entry 清空、watcher 双启）。
    **v0.2.14 纠偏（t114 三重复现证伪 v0.2.13 的 bug#2 修复）**：v0.2.13 曾按 t111 误诊在 docker run 镜像名后加 -- 分隔符，t114 实验推翻——① uid 0 对照：旧语法（不带 --）rc=0 正常输出，新语法（带 --）rc=1（-- 被 docker 透传给 ld-linux 致 usage 错）；② uid 975 降权（setpriv）：新旧语法同败 rc=126，真因始终是回调 uid 975 连 docker.sock EACCES（t107 实证）；③ **误诊根源是 stderr 只取末行（tail -1 陷阱）**：docker 多行 stderr 的末行是 usage 提示（Run 'docker run --help'），真实错误（docker: permission denied ... docker.sock）在第 2 行——t111/t114 探针均只取末行导致两轮误诊。v0.2.14 起 wlog/rb_psql_err 记 stderr 压缩全文（换行→" | "，awk POSIX 实现），并撤销两处 -- 分隔符（恢复 v0.2.11 语法）。本轮再次确认 stale upstream 语义：stale upstream 期间网关可用但 DB 未注册属真信号（网关重启即 404，suspected 判定语义仍成立）。取证存档：.qa-tmp/t114/（截图 docs/screenshots/nas-v0.2.13-waiting-banner.png）。
+   **v0.2.14 真机实测记录（2026-09-01，t117）**：三项验证全部达成——① stderr 压缩全文真机实证：gateway-watch.log 每轮 psql-err 含完整错误链（`docker: permission denied ... /var/run/docker.sock ... connect: permission denied | Run 'docker run --help'`），与 t114 单行 usage-only 对比即 tail -1 陷阱修复的直接证据；watcher 双启（install+upgrade 双跑三度实证）、20/20 轮 EACCES 全败且错误全文可见、双 watcher 正常退出；② 撤销 -- 确认（本地 fpk diff + 真机 watcher 行为与旧语法预期一致）；③ 诊断链回归（waiting 态达成 gwReq=0、未登录直连 200）。恢复链时序最优案例：T0=17:55:30 → 17:57:48 waiting → 17:59:19 heal → 18:01:05 sacentry 周期刷新（仅隔 106 秒恰逢 HH:01 档）→ 18:08 ok（gwReq=6）→ E2E 下载落盘 completed=3/failed=0。取证存档：.qa-tmp/t117/。
 2. **重启持久性**：`app_service` 已补值，理论上 NAS 重启后 entry 重建会带回 socket（数据来源链），但**未做专项重启实测**（2026-08-27 夜间未发生重启，uptime 连续）；建议下次计划内重启时顺带复验网关 200；
 3. **真机实测记录（v0.2.9，2026-08-28）**：升级路径全绿（7 源保持/数据保留/E2E 4.3MB/upgrade_callback 探针全过）；卸载重装路径 seeding 自愈、config 新默认、软链恢复、FN ID 贯通全过；唯 fix_gateway_socket 时序缺口 FAIL（上文已述，探针热修两表→19:31:05 周期注册→网关 200 恢复）。
 4. 排查方法论沉淀：PG 直连取证配方、`trim_sac` 同步周期锚点、`upstream register` 日志模式（注意实际日志为带空格的 `upstream register`，grep `upstream_register` 无匹配）见 `probe43~61` 系列脚本（本地 `.qa-tmp/t99/`；真机 `rainbow-diag/` 下的探针输出已于收尾时全部清理，结论均已回填本文档）。
@@ -181,7 +183,7 @@ WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Applicati
 
 - `default_download_dir()` 把 `TRIM_DATA_SHARE_PATHS`（data-share 共享目录，如 `/vol2/@appshare/rainbow-music`）或 `${TRIM_PKGVAR}/downloads` 写进 config.yaml 的 `download.dir`；
 - 但 compose 模板只挂载 `${TRIM_PKGVAR}/data/downloads:/app/data/downloads`，**从不挂载 download.dir 指向的目录**；`server/src/core/download/index.ts` 对绝对路径直接 `mkdirSync(recursive)` → 下载文件写进**容器可写层**（宿主不可见、容器重建即丢）；
-- 热修实测验证：直接改宿主 compose 加字面挂载行无效——**fnOS 的 compose 解析器会剥离非 `${TRIM_*}` 变量形式的挂载**（与 #88 扫描目录挂载失效同机制）。
+- 热修实测验证：直接改宿主 compose 加字面挂载行无效——**真因是 fnOS compose up 采用安装时内部保存的模板，回调期（install/upgrade_callback）动态渲染追加的挂载行不被采用**（与 #88 扫描目录挂载失效同机制）。**更正：此前「fnOS 剥离非 `${TRIM_*}` 字面挂载」的表述系误诊——限制只针对「回调期/事后渲染」，不针对「包内 compose 模板的字面挂载行」；后者随安装被 fnOS 保存进内部模板并正常生效。v0.2.15 正是据此把 data-share 挂载写成包内模板的字面行（见下文专章）。**
 
 ### 热修记录（2026-08-28，已全部验证）
 
@@ -193,8 +195,82 @@ WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Applicati
 ### v0.2.9 根治方向（本故障新增；已全部实施）
 
 1. **音源自愈（已实施）**：镜像内置音源副本（Dockerfile `COPY data/sources /app/data/sources-bundled` + `ENV RO_BUNDLED_SOURCES`，构建上下文经 .dockerignore 反排除放行），服务启动时 sources 目录无任何 .js 则 seeding 复制（`server/src/core/source-engine/index.ts`，只看 .js 后缀、绝不覆盖用户已有脚本、非 Docker 部署内置目录不存在则静默跳过）——卸载重装清空 `@appdata` 后音源自恢复，无需再手动上传；
-2. **下载目录对齐（已实施）**：`default_download_dir()` 默认输出容器内相对路径 `data/downloads`（服务端相对 ROOT_DIR=/app 解析即唯一挂载的 `/app/data/downloads`），与 compose 挂载自洽、容器重建不丢；向导显式传绝对路径仍可覆盖（fnOS 剥离字面挂载的限制不变，原生 data-share 挂载机制留待后续研究）；
+2. **下载目录对齐（已实施）**：`default_download_dir()` 默认输出容器内相对路径 `data/downloads`（服务端相对 ROOT_DIR=/app 解析即唯一挂载的 `/app/data/downloads`），与 compose 挂载自洽、容器重建不丢；**v0.2.15 起该相对路径挂载的宿主源已从 `${TRIM_PKGVAR}/data/downloads` 改为 fnOS 托管 data-share（见下文专章），下载文件直接在飞牛文件管理器可见；同时撤销「向导显式传绝对路径覆盖」能力（`wizard_download_dir` 已移除——它是唯一能把 download.dir 指向未挂载宿主路径、致下载落入容器可写层的危险入口）**；
 3. `default_download_dir()` 的 `${TRIM_PKGVAR}/downloads` 回退分支已随本次修正一并移除（同样断裂：compose 挂的是 `data/downloads`）；宿主侧 ensure_data_dirs 对相对路径不再 mkdir（旧绝对路径配置行为不变）。
+
+## v0.2.15 下载目录挂载 data-share 与运维迁移
+
+v0.2.15 解决「下载文件在飞牛文件管理器不可见」的历史遗留：把容器内下载目录 `/app/data/downloads` 的**宿主挂载源**从应用私有目录 `${TRIM_PKGVAR}/data/downloads`（即 `@appdata/com.rainbow.music/data/downloads`，文件管理器默认不展示）改为 fnOS 托管的 **data-share 共享目录 `rainbow-music`**（`fpk/config/resource` 已声明，权限 rw）。下载文件从此直接出现在飞牛文件管理器的共享目录里。
+
+### 源 → 容器路径映射（唯一改动点）
+
+| 层 | 路径 | 说明 |
+|---|---|---|
+| compose 挂载源（宿主） | `/var/apps/com.rainbow.music/shares/rainbow-music` | fnOS 维护的**卷号无关稳定软链** → `@appshare/rainbow-music`（本机实测解析到 `/vol2/@appshare/rainbow-music`）。**不硬编码 `/volN`**（卷号不稳定），**不用 `${TRIM_DATA_SHARE_PATHS}` 作 compose 源**（渲染期可用性未证实；该变量仅在生命周期脚本内只读记录） |
+| 容器内挂载点 | `/app/data/downloads` | **保持不变** |
+| `config.yaml` 的 `download.dir` | `data/downloads`（相对值） | **保持不变**，服务端相对 `ROOT_DIR=/app` 解析即 `/app/data/downloads` |
+| `RO_SCAN_ROOTS` 首项 | `/app/data/downloads` | **保持不变**，重挂后自动扫描该共享下载目录 |
+
+**唯一改动 = compose 里那一行挂载源**；容器内路径、config 相对值、扫描根全部不动，故对服务端代码零侵入。
+
+### 为什么这行必须留在「包内 compose 模板」
+
+t118 调研实证：fnOS compose up 采用**安装时内部保存的模板**，回调期（install/upgrade_callback）动态渲染追加的挂载行**不被采用**（见「2026-08-28」章与 #88 第 2 条）。因此 data-share 挂载**必须写成包内 `fpk/app/docker/docker-compose.yaml` 的字面行**——它随安装被 fnOS 保存进内部模板才生效。这也是此前「热修直接改宿主 compose 无效」的正解：无效的是「回调期/事后渲染」，不是「包内字面行」。
+
+### data-share 软链只读诊断（guard 契约）
+
+`fpk/cmd/_common` 新增 `check_data_share_link()`，由 `install_callback`（`ensure_data_dirs` 之前）与 `upgrade_callback`（独立 `04b-sharelink` probe 步骤）调用：
+
+- **只读**：检查 `/var/apps/com.rainbow.music/shares/rainbow-music` 是否存在并解析到真实目录，把状态（`ok` 有效软链 / `missing` 不存在 / `broken` 悬空 / `realdir` 真实目录冲突 / `unexpected`）连同 `TRIM_DATA_SHARE_PATHS` 现值写入回调日志，供升级后取证；
+- **绝不写**：不创建、不修复、不删除、不移动、不替换该路径任何东西。回调以应用用户 **uid 975** 运行，无法可靠修改 root 托管的 shares 软链，任何写尝试都有覆盖真实目录的风险；
+- **恒不阻断**：函数永远 `return 0`（fail-safe），诊断失败也不中断安装/升级。
+
+### 遗留 `download.dir` 自动收敛（升级必读）
+
+只改 compose 挂载**修不了老现场**：`render_config()` 幂等（`config.yaml` 已存在即跳过），而 `upgrade_callback` 原先完全不碰配置文件。因此旧版被写进 `download.dir` 的宿主绝对路径会原样活过升级——compose 已把 data-share 挂到 `/app/data/downloads`，服务端却仍按绝对路径往容器可写层写。
+
+v0.2.15 因此在 `fpk/cmd/_common` 新增 `normalize_download_dir()`，由 `install_callback`（紧跟 `render_config`）与 `upgrade_callback`（独立 `04c-normalize-ddir` probe 步骤）调用，把 `download.dir` 无条件收敛回唯一受支持值 `data/downloads`。v0.2.15 已移除 `wizard_download_dir`，该项不再是用户可配项，收敛不会覆盖任何有效意图。
+
+**2026-09-03 真机只读预检实证**（v0.2.14 现场，升级前取证）：
+
+| 观测项 | 实测值 |
+|---|---|
+| `config.yaml` 的 `download.dir` | `"/vol2/@appshare/rainbow-music"`（宿主绝对路径） |
+| `GET /api/v1/settings` 的 `resolvedDir` | `/vol2/@appshare/rainbow-music`（`core/config.ts` 对绝对路径 `path.resolve` 原样返回） |
+| 运行容器实际挂载 | 仅 `config.yaml`、`data/db`、`data/downloads`、`data/sources`、`@appcenter`——**不含**上述绝对路径 |
+| 容器内 `/vol2/@appshare/rainbow-music` | 可写层空目录，1 文件 / 4.9MB（`光辉岁月 - BEYOND.mp3`） |
+| 宿主 `/vol2/@appshare/rainbow-music` | 真实 data-share，94 项 / 3.0G |
+
+即：新下载正滞留容器可写层，宿主与文件管理器均不可见，容器重建即丢。这正是收敛要修的状态。
+
+安全约束：
+
+- **改前备份**：`cp -p` 原配置为 `config.yaml.bak-<UTC 时间戳>`（etc 目录属主即应用用户 uid 975，回调可写），日志保留旧值 → 可人工回滚；
+- **限定 `download:` 块**：`sources:` 块同样有 `dir:` 行，awk 按顶层键切换块内标志，绝不误改 `sources.dir`；
+- **覆写而非 `mv`**：经 `cat >` 保留原 inode 与属主，避免单文件 bind mount 失联；
+- **恒 `return 0`**：读写失败只告警并保留原值，绝不阻断安装/升级（`install_callback` 为 `set -eu`，已实测各分支不触发退出）。
+
+### data-share 与「扫描目录」重叠（v0.2.15 新引入，当前为潜伏态）
+
+v0.2.15 起 `/app/data/downloads` 就是 data-share 本身。若用户此前把同一个共享目录填进了向导「音乐库扫描目录」（本机实测 `${TRIM_PKGETC}/scan-dirs.conf` 内容正是 `/vol2/@appshare/rainbow-music`），`render_scan_mounts` 会再渲染一行 `/app/data/scan/1` 指向同一目录，而 `RO_SCAN_ROOTS` 首项恒为 `/app/data/downloads` → 两个扫描根同源，曲库会把同一批文件**索引两遍**。
+
+目前**不会实际发生**：扫描挂载与 `RO_SCAN_ROOTS` 都属回调期渲染，只重启未重建的容器不采用（即 #88 同机制）。2026-09-03 真机取证——保存的 compose 里写着 `RO_SCAN_ROOTS: "/app/data/downloads:/app/data/scan/1"` 且有 `- /vol2/@appshare/rainbow-music:/app/data/scan/1`，但运行容器（Created 2026-09-01 17:55、Started 2026-09-02 22:52、RestartCount 0）内实测 `RO_SCAN_ROOTS=/app/data/downloads`，`/app/data/scan` 目录根本不存在。
+
+因此 v0.2.15 **不为此加去重代码**（场景当前不可达，加了等于为不会发生的情况写防御）。留两条后续约束：
+
+- 将来若修复 #88（让回调渲染的扫描挂载真正生效），必须同时在 `render_scan_mounts` 跳过「解析后与 data-share 同真实路径」的扫描目录，否则重复索引立刻显形；
+- 运维侧：v0.2.15 之后 `scan-dirs.conf` 里的 data-share 条目已**冗余**（下载目录恒在扫描根首位），建议移除，避免 #88 修复后踩坑。
+
+### 运维手动迁移（copy-only，不自动执行）
+
+v0.2.15 **不自动迁移**旧 `@appdata/com.rainbow.music/data/downloads` 里的历史下载（用户选定策略：旧文件原样保留、不删不改）。旧目录由 `ensure_data_dirs` 继续创建保留。若要把历史下载并入新共享目录，由**运维手动**执行 copy-only（no-clobber）迁移：
+
+1. **迁移前对账**：记录源目录（`@appdata/.../data/downloads`）与目标（`/var/apps/com.rainbow.music/shares/rainbow-music` 解析后的 `@appshare/rainbow-music`）的**文件数、字节总量、可用空间**，确认目标卷余量 ≥ 源占用；
+2. **copy-only + no-clobber**：`cp -Rpn <源>/. <目标>/`（`-n` 不覆盖已存在文件、`-p` 保留属性），**绝不 `mv`/`rm` 源**；
+3. **迁移后校验**：目标文件数/字节总量 ≥ 源（no-clobber 下可能因同名跳过而略增不减），抽样若干文件比对 **MD5/size** 一致；
+4. **历史任务路径**：迁移完成前，数据库里指向旧 `@appdata` 相对路径的历史下载任务，其文件在新挂载下**可能无法解析**（播放/取回 410）——属「不自动迁移」的预期后果，完成上述 copy 后即恢复。
+
+> 迁移是**可选**的运维动作，v0.2.15 包本身永不触碰旧文件。
 
 ## 安装向导：「音乐库扫描目录」配置与挂载机制
 

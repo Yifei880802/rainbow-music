@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.14
+version=0.2.15
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 source=thirdparty
@@ -14,4 +14,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=撤销 v0.2.13 误诊修复：rb_psql/watcher 的 docker run 撤销镜像名后 -- 分隔符（t114 三重复现证伪——uid 0 下旧语法本就可用、-- 反被透传给 loader 致败；真因是回调 uid 975 连 docker.sock EACCES）；wlog/rb_psql_err 从 stderr 末行改为压缩全文（修 tail -1 取证陷阱：docker 多行错误末行是 usage 提示，真实 EACCES 在第 2 行）。t114 回填：bug#1 waiting 态达成、bug#3 未登录直连 200、升级=完整重装链再实证
+changelog=下载目录改挂 fnOS 托管 data-share 共享目录 rainbow-music（源用卷号无关稳定软链 /var/apps/com.rainbow.music/shares/rainbow-music），下载文件可直接在飞牛文件管理器查看；容器内路径 /app/data/downloads 与 config.yaml 的 download.dir=data/downloads 均保持不变。撤销可写入未挂载宿主路径的危险向导输入 wizard_download_dir；install/upgrade 回调新增 data-share 软链只读诊断（恒不阻断、绝不改动该路径）。旧版若已把宿主绝对路径写进 download.dir（下载会落进容器可写层、重建即丢），升级时自动收敛回 data/downloads 并备份原 config.yaml 便于回滚。旧 @appdata 下载不自动迁移，提供运维手动 copy-only（no-clobber）迁移流程与校验

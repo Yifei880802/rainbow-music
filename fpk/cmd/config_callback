@@ -3,8 +3,9 @@
 # Rainbow 音乐下载 — 配置向导钩子：config_callback
 #
 # 应用设置页提交后执行：按向导新值热更新 config.yaml（只改提交的字段，保留其余）。
-#   - 密码/目录走 yaml_dquote_escape + sed RHS 双重转义（与 install_callback 一致）
-#   - 下载目录用 awk 区块锚定改 download.dir（不误伤同缩进的 sources.dir）
+#   - 密码走 yaml_dquote_escape + sed RHS 双重转义（与 install_callback 一致）
+#   - v0.2.15：移除下载目录字段——download.dir 恒为容器内相对路径 data/downloads
+#     （下载目录已固定挂载 data-share rainbow-music，见 compose），配置页不再可改
 #   - v0.2.1：扫描目录非空时重渲染 compose 挂载与 RO_SCAN_ROOTS（留空=保持不变）
 #   - 有变更则重启容器生效；末尾幂等补齐数据目录
 
@@ -13,7 +14,7 @@ set -eu
 # shellcheck source=/dev/null
 source "$(cd "$(dirname "$0")" && pwd)/_common"
 
-[ -f "$CONFIG_FILE" ] || render_config "${wizard_password:-}" "${wizard_port:-}" "${wizard_download_dir:-}"
+[ -f "$CONFIG_FILE" ] || render_config "${wizard_password:-}" "${wizard_port:-}" ""
 changed=0
 # v0.2.6：向导已移除端口项（服务监听由 compose 字面量 RO_SERVER_PORT=23330 固定，
 # env 优先于 config.yaml）；本分支为兼容保留——若 fnOS 带旧字段重跑回调，仍只改
@@ -34,19 +35,8 @@ if [ -n "${wizard_password:-}" ]; then
     sed -i.bak "s|^\(    password:\).*|\1 \"${pass_esc}\"|" "$CONFIG_FILE" && rm -f "$CONFIG_FILE.bak"
     changed=1
 fi
-if [ -n "${wizard_download_dir:-}" ]; then
-    ddir_esc=$(yaml_dquote_escape "${wizard_download_dir}")
-    # 区块锚定：只改 download 段的 dir（同缩进的 sources.dir 不得被误改）。
-    # 不用 sed 地址+next 写法（BSD/GNU 行为不一致），改 awk 经 ENVIRON 透传（不做转义处理）
-    RO_NEW_DIR="$ddir_esc" awk '
-        /^download:/ { indl = 1; print; next }
-        indl && /^  dir:/ { print "  dir: \"" ENVIRON["RO_NEW_DIR"] "\""; indl = 0; next }
-        /^[^ ]/ { indl = 0 }
-        { print }
-    ' "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-    mkdir -p "$wizard_download_dir" 2>/dev/null || true
-    changed=1
-fi
+# v0.2.15：移除下载目录改写分支——download.dir 恒为相对 data/downloads，下载目录
+# 固定挂载 data-share rainbow-music（见 compose），不再接受向导绝对路径覆盖
 if [ -n "${wizard_scan_dirs:-}" ]; then
     # v0.2.1：填了新扫描目录才重渲染（留空=保持当前挂载不变）；填入的新值
     # 替换全部旧目录（不存在目录仅告警跳过），并同步更新持久化记录

@@ -82,13 +82,13 @@ probe_status() {
 # ---------- 配置渲染 ----------
 
 default_download_dir() {
-    # v0.2.9：默认容器内相对路径 data/downloads（服务端相对 ROOT_DIR=/app 解析，
-    # 即 compose 唯一挂载的 /app/data/downloads ← ${TRIM_PKGVAR}/data/downloads，
-    # 容器内自洽、容器重建不丢）。旧版把 TRIM_DATA_SHARE_PATHS（data-share 宿主
-    # 绝对路径）或 ${TRIM_PKGVAR}/downloads 写进 config.yaml 的 download.dir，
-    # 但 compose 从不挂载这两个目录——下载会落进容器可写层、容器重建即丢
-    # （结构性断裂，见 docs/FNOS-DEPLOY.md 2026-08-28 音源章根因二），已弃用。
-    # 向导仍可传 wizard_download_dir 绝对路径显式覆盖（语义与限制见部署文档）。
+    # 容器内相对路径 data/downloads（服务端相对 ROOT_DIR=/app 解析，即 compose 唯一
+    # 挂载的 /app/data/downloads，容器内自洽、容器重建不丢）。v0.2.15：该挂载源改为
+    # fnOS data-share 软链 /var/apps/com.rainbow.music/shares/rainbow-music
+    # （→ @appshare/rainbow-music），下载文件可在飞牛文件管理器直接查看；容器内路径与
+    # 本相对值均不变。旧版把宿主绝对路径写进 download.dir 却不挂载对应目录——下载落进
+    # 容器可写层、重建即丢（结构性断裂，见 docs/FNOS-DEPLOY.md），已弃用；向导的
+    # wizard_download_dir 覆盖入口也于 v0.2.15 一并移除（唯一可重现该断裂的口子）。
     printf '%s' "data/downloads"
 }
 
@@ -172,6 +172,62 @@ YAML
     rm -f "$CONFIG_FILE.bak"
     chmod 600 "$CONFIG_FILE" 2>/dev/null || true
     log_info "已生成初始配置 ${CONFIG_FILE}（端口=${port} 下载目录=${ddir}）"
+}
+
+normalize_download_dir() {
+    # v0.2.15：把已存在 config.yaml 的 download.dir 收敛回唯一受支持值 data/downloads。
+    #
+    # 为什么必须收敛：.fpk 只挂载包内 compose 模板声明的目录。download.dir 写宿主绝对
+    # 路径（旧版 USER-GUIDE 的建议与 wizard_download_dir 输入框都允许）时，该路径在容器内
+    # 不指向任何挂载点 → mkdirSync 在可写层建目录，下载落进容器可写层：宿主与飞牛文件
+    # 管理器均不可见，容器重建即丢。真机 v0.2.14 现场实证：settings 的
+    # resolvedDir=/vol2/@appshare/rainbow-music，而容器内该路径是可写层空目录（宿主同名
+    # 目录另有 94 个文件/3.0G），新下载 4.9MB 文件滞留可写层。
+    #
+    # render_config 幂等（config.yaml 已存在即跳过）且 upgrade_callback 原先不碰配置，
+    # 故仅改 compose 挂载无法修复老现场——升级后 download.dir 仍是断裂的绝对路径。
+    # v0.2.15 已移除向导覆盖入口，download.dir 不再是用户可配项，安装/升级时无条件收敛。
+    #
+    # 安全：改前备份 config.yaml 为 config.yaml.bak-<UTC 时间戳>（etc 目录属主即应用用户
+    # uid 975，回调可写），日志保留旧值 → 可人工回滚。恒 return 0（fail-safe，绝不阻断
+    # 安装/升级）。
+    [ -f "$CONFIG_FILE" ] || return 0
+    local want cur line bak
+    want=$(default_download_dir)
+    # 仅在 download: 块内取 dir: —— sources: 块同样有 dir: 行，全局匹配会误伤
+    cur=$(awk '
+        /^[^[:space:]#]/ { inblk = ($0 ~ /^download:/) }
+        inblk && /^[[:space:]]+dir:/ {
+            sub(/^[[:space:]]+dir:[[:space:]]*/, "")
+            gsub(/^"|"$/, "")
+            print
+            exit
+        }
+    ' "$CONFIG_FILE" 2>/dev/null || true)
+    if [ -z "$cur" ]; then
+        log_info "download.dir 未在 ${CONFIG_FILE} 显式配置，跳过收敛（服务端回落默认值）"
+        return 0
+    fi
+    [ "$cur" = "$want" ] && return 0
+    bak="${CONFIG_FILE}.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -p "$CONFIG_FILE" "$bak" 2>/dev/null || bak=""
+    # want 是内部固定常量（无引号/反斜杠），不需 YAML 或 awk -v 转义
+    line="  dir: \"${want}\""
+    if awk -v line="$line" '
+        /^[^[:space:]#]/ { inblk = ($0 ~ /^download:/) }
+        inblk && /^[[:space:]]+dir:/ { print line; next }
+        { print }
+    ' "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" 2>/dev/null && [ -s "${CONFIG_FILE}.tmp" ]; then
+        # 经 cat 覆写而非 mv：保留原 inode 与属主，避免 bind mount 单文件挂载失联
+        cat "${CONFIG_FILE}.tmp" > "$CONFIG_FILE" 2>/dev/null || true
+        rm -f "${CONFIG_FILE}.tmp"
+        chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+        log_info "download.dir 收敛：${cur} → ${want}（v0.2.15 起 .fpk 下载目录固定挂载 data-share，旧值指向未挂载宿主路径会让下载落进容器可写层）${bak:+；原配置已备份 ${bak}}"
+    else
+        rm -f "${CONFIG_FILE}.tmp" 2>/dev/null || true
+        log_info "download.dir 收敛失败，保留原值 ${cur}：${CONFIG_FILE} 不可写或 awk 输出为空，请人工改为 ${want}"
+    fi
+    return 0
 }
 
 # ---------- 音乐库扫描目录渲染（v0.2.1：统一网关 + 本地音乐库） ----------
@@ -261,6 +317,35 @@ ensure_data_dirs() {
     case "$ddir" in
         /*) mkdir -p "$ddir" 2>/dev/null || true ;;
     esac
+}
+
+# ---------- data-share 软链只读诊断（v0.2.15） ----------
+
+check_data_share_link() {
+    # 下载挂载源 /var/apps/${APP_NAME}/shares/rainbow-music 是 fnOS 为 data-share
+    # 「rainbow-music」维护的卷号无关软链（→ @appshare/rainbow-music）。本函数只读
+    # 诊断该路径状态并写日志，供安装/升级后取证；恒 return 0（fail-safe，不阻断回调）。
+    # 绝不创建/修复/删除/移动/替换该路径——回调以应用用户（uid 975）执行，改不动
+    # root 管理的软链，任何写操作都可能误伤真实目录。TRIM_DATA_SHARE_PATHS 在生命周期
+    # 脚本中可用（":" 分隔的 data-share 宿主路径），仅用于对照记录，不参与任何写操作。
+    local link="/var/apps/${APP_NAME}/shares/rainbow-music"
+    local target="" state=""
+    if [ -L "$link" ]; then
+        target=$(readlink "$link" 2>/dev/null || true)
+        if [ -n "$target" ] && [ -d "$link" ]; then
+            state="ok（软链有效 → ${target}）"
+        else
+            state="broken（软链悬空 → ${target:-空}）"
+        fi
+    elif [ -d "$link" ]; then
+        state="realdir（该路径是真实目录而非软链，需人工核查，本函数不改动）"
+    elif [ -e "$link" ]; then
+        state="unexpected（该路径存在但既非软链也非目录）"
+    else
+        state="missing（软链不存在）"
+    fi
+    log_info "data-share 软链诊断：${link} → ${state}；TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-未注入}"
+    return 0
 }
 
 # ---------- 网关 socket DB 补写（v0.2.9 引入；v0.2.10 watcher；v0.2.11 docker 化执行） ----------

@@ -230,6 +230,82 @@ stage_fpk() {
         fi
         log "manifest version 校验通过：$manifest_v"
     fi
+
+    # ── v0.2.15 包级断言：下载挂载源 = data-share 软链，且无 wizard_download_dir 残留 ──
+    local share_src="/var/apps/com.rainbow.music/shares/rainbow-music"
+    local dl_re='^[[:space:]]*-[[:space:]]+[^:]+:/app/data/downloads[[:space:]]*$'
+    local dl_count dl_line dl_src
+    dl_count="$(grep -Ec "$dl_re" "$compose" || true)"
+    if [[ "$dl_count" -ne 1 ]]; then
+        log "${C_RED}${C_BOLD}DOWNLOAD_MOUNT_FAIL${C_NC}：映射到 /app/data/downloads 的 volume 行应恰好 1 条，实际 ${dl_count} 条"
+        return 1
+    fi
+    dl_line="$(grep -E "$dl_re" "$compose" | head -n1)"
+    dl_src="$(printf '%s\n' "$dl_line" | sed -E 's/^[[:space:]]*-[[:space:]]+//; s#:/app/data/downloads[[:space:]]*$##')"
+    if [[ "$dl_src" != "$share_src" ]]; then
+        log "${C_RED}${C_BOLD}DOWNLOAD_MOUNT_FAIL${C_NC}：下载挂载源='$dl_src'，预期 '$share_src'"
+        return 1
+    fi
+    log "${C_GREEN}${C_BOLD}DOWNLOAD_MOUNT_PASS${C_NC}：下载目录挂载 data-share 软链（${share_src} → /app/data/downloads）"
+
+    # 拒绝旧的 @appdata 下载挂载回潮
+    if grep -Fq '${TRIM_PKGVAR}/data/downloads:/app/data/downloads' "$compose"; then
+        log "${C_RED}${C_BOLD}DOWNLOAD_MOUNT_FAIL${C_NC}：compose 仍存在旧挂载 \${TRIM_PKGVAR}/data/downloads:/app/data/downloads"
+        return 1
+    fi
+
+    # 拒绝 wizard_download_dir 残留：向导 JSON 不得含该字段（JSON 无注释，裸词即违规）
+    local wiz_install wiz_config cmdf
+    wiz_install="$(find "$TMP_EXTRACT" -type f -path '*wizard/install' | head -n1)"
+    wiz_config="$(find "$TMP_EXTRACT" -type f -path '*wizard/config' | head -n1)"
+    if [[ -z "$wiz_install" || -z "$wiz_config" ]]; then
+        log "${C_RED}${C_BOLD}WIZARD_FIELD_FAIL${C_NC}：解包产物中找不到 wizard/install 或 wizard/config"
+        return 1
+    fi
+    if grep -Fq 'wizard_download_dir' "$wiz_install" || grep -Fq 'wizard_download_dir' "$wiz_config"; then
+        log "${C_RED}${C_BOLD}WIZARD_FIELD_FAIL${C_NC}：向导文件仍含 wizard_download_dir 字段"
+        return 1
+    fi
+    # cmd 脚本不得有 ${wizard_download_dir} 变量用法（记录“已移除”的裸词注释允许保留）
+    while IFS= read -r cmdf; do
+        [[ -n "$cmdf" ]] || continue
+        if grep -Fq '${wizard_download_dir' "$cmdf"; then
+            log "${C_RED}${C_BOLD}WIZARD_FIELD_FAIL${C_NC}：$cmdf 仍引用 \${wizard_download_dir}"
+            return 1
+        fi
+    done < <(find "$TMP_EXTRACT" -type f -path '*cmd/*')
+    log "${C_GREEN}${C_BOLD}WIZARD_FIELD_PASS${C_NC}：向导/回调均无 wizard_download_dir 残留"
+
+    # v0.2.15：download.dir 收敛必须在包内生效——老现场把宿主绝对路径写进配置，
+    # 而 render_config 幂等跳过已存在的 config.yaml，仅改 compose 挂载修不了老现场
+    local common_f install_cb upgrade_cb
+    common_f="$(find "$TMP_EXTRACT" -type f -path '*cmd/_common' | head -n1)"
+    install_cb="$(find "$TMP_EXTRACT" -type f -path '*cmd/install_callback' | head -n1)"
+    upgrade_cb="$(find "$TMP_EXTRACT" -type f -path '*cmd/upgrade_callback' | head -n1)"
+    if [[ -z "$common_f" || -z "$install_cb" || -z "$upgrade_cb" ]]; then
+        log "${C_RED}${C_BOLD}DDIR_CONVERGE_FAIL${C_NC}：解包产物缺少 cmd/_common、install_callback 或 upgrade_callback"
+        return 1
+    fi
+    if ! grep -q '^normalize_download_dir()' "$common_f"; then
+        log "${C_RED}${C_BOLD}DDIR_CONVERGE_FAIL${C_NC}：cmd/_common 未定义 normalize_download_dir()"
+        return 1
+    fi
+    if ! grep -qE '^[[:space:]]*normalize_download_dir' "$install_cb" \
+        || ! grep -qE '^[[:space:]]*normalize_download_dir' "$upgrade_cb"; then
+        log "${C_RED}${C_BOLD}DDIR_CONVERGE_FAIL${C_NC}：install_callback / upgrade_callback 未调用 normalize_download_dir"
+        return 1
+    fi
+    if ! grep -q 'cp -p "$CONFIG_FILE"' "$common_f"; then
+        log "${C_RED}${C_BOLD}DDIR_CONVERGE_FAIL${C_NC}：normalize_download_dir 改写前未备份 config.yaml"
+        return 1
+    fi
+    # 改写必须限定在 download: 块内——sources: 块同样有 dir: 行，全局替换会毁掉音源目录
+    if ! grep -q '\^download:' "$common_f"; then
+        log "${C_RED}${C_BOLD}DDIR_CONVERGE_FAIL${C_NC}：normalize_download_dir 未按 download: 块限定 dir: 匹配"
+        return 1
+    fi
+    log "${C_GREEN}${C_BOLD}DDIR_CONVERGE_PASS${C_NC}：安装/升级回调均收敛遗留 download.dir（改前备份、限定 download 块）"
+
     return 0
 }
 
