@@ -63,6 +63,139 @@ export function coverCacheFile(uid: string, trackId: number): string {
   return path.join(coverCacheDir(uid), `${trackId}.jpg`)
 }
 
+/** normalizeScanRoots 的结果：规范化后的根 + 被丢弃根的取证明细 */
+export interface NormalizedScanRoots {
+  /** 交给 worker walk 的根（realpath 形态，已去重与剪枝） */
+  roots: string[]
+  /** 被丢弃的根与原因（写日志供真机取证） */
+  dropped: Array<{ root: string; reason: string }>
+}
+
+/**
+ * 扫描根规范化：realpath 解析 + 物理同源去重 + 嵌套剪枝（#129/M3，依 t128 调研第 4.2 节）。
+ *
+ * **为什么必须做（M3 翻倍成因）**：曲库的去重键自始至终是**路径字符串**——表约束
+ * `UNIQUE(uid, path)`、扫描期 `st.seenPaths` 也是字符串集合。若两个 enabled 根指向同一物理
+ * 目录（例：`/app/data/downloads` 与 `/app/data/scan/1` 都 bind 到 `@appshare/rainbow-music`），
+ * walk 出的字符串不同（`…/downloads/x.flac` vs `…/scan/1/x.flac`）→ 两道去重全部失效 →
+ * 同一物理文件被索引两行，**曲库翻倍**。#129 让第二个扫描根（导入目录）真正生效后，
+ * 这道防线从「理论需要」变成「必须存在」。
+ *
+ * 三步处理：
+ *   1. **realpath 解析**：消解符号链接与 `.`/`..`，让「同一目录的不同写法」收敛到同一字符串。
+ *      失败（路径不存在/无权限）保留 `path.resolve` 结果并告警——与既有「目录不存在仅跳过」
+ *      的容错口径一致，绝不因规范化失败阻断扫描。
+ *   2. **dev+ino 物理同源去重**（对 t128 设计的关键补充）：这一步 realpath **无法替代**。
+ *      realpath 只解析符号链接，而 bind mount 不是符号链接、容器内也看不到宿主路径——
+ *      `/app/data/downloads` 的 realpath 恒为它自己，即使它与 `/app/data/scan/1` bind 到同一
+ *      宿主目录，两者 realpath 也完全不同。只有 `statSync` 的 `st_dev`/`st_ino` 会相同
+ *      （同一 inode），故以 `${dev}:${ino}` 为物理身份键去重；stat 不可用时退化为按
+ *      realpath 字符串去重。保留首次出现顺序（首根语义不变）。
+ *   3. **嵌套剪枝（与输入顺序无关）**：若 A 的 realpath 位于 B 的 realpath 之内，则 A 的全部
+ *      文件已被 B 覆盖，丢弃 A、保留 B。判定基于「祖先关系」这一偏序而非到达顺序，故
+ *      `[子, 父]` 与 `[父, 子]` 两种输入都收敛到同一结果（只丢严格后代，不会父子俱丢）。
+ *      t128 第 4.2 节第 3 步只描述了「rootB 在 rootA 之内则丢 rootB」，隐含假设父根先到；
+ *      此处补全逆序情形，避免 `[子, 父]` 输入下子根先被保留、随后父根又整体覆盖它而翻倍。
+ *
+ * 与 #129 Track A 的关系：导入共享 `rainbow-library` 是**独立顶层共享名**，与下载共享
+ * `rainbow-music` 物理不同源、互不嵌套，设计上不触发本函数任何一道剪枝（两个根原样保留、
+ * 顺序不变）。本函数是兜底：防用户日后把两个根误配成同源/嵌套，也防将来 Track B（native
+ * 宿主直读任意路径）/Track C 的多根场景。
+ *
+ * 输出用 realpath 形态的根交给 worker：容器内 data-share 挂载点的 realpath 就是它自己
+ * （零变化），仅在存在符号链接时才规范化——此时规范化正是正确行为（避免同一物理目录经
+ * 两条链接路径被双扫），且与 isPathAllowed 的比对口径保持一致。
+ */
+export function normalizeScanRoots(roots: string[]): NormalizedScanRoots {
+  const dropped: Array<{ root: string; reason: string }> = []
+  /** 第 1、2 步产物：按首次出现顺序保留的「物理唯一」根 */
+  const uniq: Array<{ raw: string; real: string; id: string | null }> = []
+  /** 已保留根的物理身份 dev:ino → 其 realpath（同源去重依据） */
+  const seenIds = new Map<string, string>()
+
+  for (const raw of roots) {
+    if (typeof raw !== 'string' || raw.trim() === '') continue
+    const resolved = path.resolve(raw)
+    let real = resolved
+    try {
+      real = fs.realpathSync(resolved)
+    } catch {
+      // 路径不存在/无权限：保留 resolve 结果，交给 worker 按既有容错跳过（不阻断其余根）
+      logger.warn({ root: resolved }, '[library] scan root realpath failed, keeping resolved path')
+    }
+    // 物理身份：同一 inode（含 bind mount 到同一宿主目录）dev+ino 必然相同
+    let id: string | null = null
+    try {
+      const st = fs.statSync(real)
+      id = `${st.dev}:${st.ino}`
+    } catch {
+      id = null // 取不到物理身份：退化为仅按 realpath 字符串去重
+    }
+    const sameId = id !== null ? seenIds.get(id) : undefined
+    if (sameId !== undefined) {
+      dropped.push({ root: raw, reason: `与已保留根物理同源（dev:ino=${id ?? '?'} → ${sameId}）` })
+      continue
+    }
+    if (uniq.some((u) => u.real === real)) {
+      dropped.push({ root: raw, reason: `与已保留根同一真实路径（${real}）` })
+      continue
+    }
+    uniq.push({ raw, real, id })
+    if (id !== null) seenIds.set(id, real)
+  }
+
+  // 第 3 步：嵌套剪枝。祖先关系是偏序、与到达顺序无关，故在去重完成后统一判定，
+  // 使 [父,子] 与 [子,父] 两种输入收敛到同一结果（只丢严格后代，不会父子俱丢）。
+  //
+  // ⚠️ 判定必须走「dev:ino 祖先链」而不能只用 path.relative 字符串——这是对 t128 第 4.2 节
+  // 第 3 步的第二处补全。容器内两个 bind mount 的 realpath 各自独立（bind 不是符号链接），
+  // 若宿主上导入目录嵌套在下载目录之内（即命名红线 R5 被破坏的场景，如共享名写成
+  // rainbow-music/library），则两根的 realpath 之间既无字符串祖先关系、dev:ino 也不相同
+  // （确是两个不同目录），字符串判定会完全漏检 → 曲库照样翻倍。只有逐级向上 stat 祖先
+  // 目录、比对 dev:ino，才能识别这种跨挂载视角的嵌套。字符串判定保留为 stat 不可用时的兜底。
+  const idOf = (p: string): string | null => {
+    try {
+      const s = fs.statSync(p)
+      return `${s.dev}:${s.ino}`
+    } catch {
+      return null
+    }
+  }
+  /** child 是否严格位于 ancestor 之内（ancestorReal 为其 realpath，ancestorId 为其物理身份） */
+  const isDescendantOf = (child: string, ancestorReal: string, ancestorId: string | null): boolean => {
+    const rel = path.relative(ancestorReal, child)
+    // rel 既非空、又不以 .. 开头、也非绝对路径 → 同视角下的字符串祖先关系成立
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) return true
+    if (ancestorId === null) return false
+    // 跨挂载视角：自 child 逐级向上，任一祖先目录与 ancestor 物理同一即成立
+    let cur = child
+    for (;;) {
+      const parent = path.dirname(cur)
+      if (parent === cur) break // 已到文件系统根
+      if (idOf(parent) === ancestorId) return true
+      cur = parent
+    }
+    return false
+  }
+  const kept: string[] = []
+  for (const item of uniq) {
+    let ancestor: string | null = null
+    for (const other of uniq) {
+      if (other === item) continue
+      if (isDescendantOf(item.real, other.real, other.id)) {
+        ancestor = other.real
+        break
+      }
+    }
+    if (ancestor !== null) {
+      dropped.push({ root: item.raw, reason: `位于另一扫描根之内（${ancestor}），父根已覆盖其全部文件` })
+      continue
+    }
+    kept.push(item.real)
+  }
+  return { roots: kept, dropped }
+}
+
 export interface ScanProgress {
   phase: 'walk' | 'meta' | 'done'
   scanned: number
@@ -149,6 +282,11 @@ class LibraryScanner {
   startScan(uid: string, roots: string[]): string {
     if (this.isScanning(uid)) throw new ScanConflictError('scan already in progress for this user')
     const db = initDb()
+    // #129/M3：扫描根规范化（realpath + dev/ino 同源去重 + 嵌套剪枝）。必须在建快照与
+    // 发 walk 之前完成——worker 按规范化后的根枚举，DB 落库路径、进度展示的 currentRoot、
+    // isPathAllowed 的鉴权集合三者同一口径，杜绝「同源双根各索引一遍」的曲库翻倍
+    const normalized = normalizeScanRoots(roots)
+    const effectiveRoots = normalized.roots
     // per-uid 轮次计数 +1 并立即持久化（崩溃后重启不会复用旧轮号，删除判定保持单调）
     const round = Number(taskStore.getMeta(ROUND_META_KEY(uid)) ?? '0') + 1
     taskStore.setMeta(ROUND_META_KEY(uid), String(round))
@@ -164,7 +302,7 @@ class LibraryScanner {
     const st: ScanState = {
       uid,
       jobId: randomUUID(),
-      roots,
+      roots: effectiveRoots,
       scanning: true,
       startedAt: Date.now(),
       round,
@@ -175,7 +313,7 @@ class LibraryScanner {
         added: 0,
         updated: 0,
         removed: 0,
-        currentRoot: roots[0] ?? null,
+        currentRoot: effectiveRoots[0] ?? null,
         metaDone: 0,
         metaTotal: 0,
       },
@@ -186,7 +324,18 @@ class LibraryScanner {
       currentMetaBatch: new Map(),
     }
     this.states.set(uid, st)
-    logger.info({ uid, jobId: st.jobId, round, roots: roots.length, known: snapshot.size }, '[library] scan started')
+    // 取证日志：原始 roots → 规范化 roots（含丢弃原因）。t128 第 4.2 节第 4 步要求，
+    // 真机核对「两个扫描根是否物理同源」（M3 翻倍第一现场）只能看这条
+    if (effectiveRoots.length !== roots.length || normalized.dropped.length > 0) {
+      logger.warn(
+        { uid, requested: roots, effective: effectiveRoots, dropped: normalized.dropped },
+        '[library] scan roots normalized (duplicate/nested roots pruned)',
+      )
+    }
+    logger.info(
+      { uid, jobId: st.jobId, round, roots: effectiveRoots.length, known: snapshot.size },
+      '[library] scan started',
+    )
 
     try {
       const worker = new Worker(scannerWorkerUrl())
@@ -198,7 +347,7 @@ class LibraryScanner {
         // 正常收尾路径（finishScan/failScan）先 terminate/置 scanning=false；此处只兜异常退出
         if (st.scanning && code !== 0) this.failScan(st, `worker exited unexpectedly (code ${code})`)
       })
-      worker.postMessage({ type: 'walk', jobId: st.jobId, roots })
+      worker.postMessage({ type: 'walk', jobId: st.jobId, roots: effectiveRoots })
       this.emitProgress(st, true)
     } catch (err) {
       this.failScan(st, `worker spawn failed: ${(err as Error).message}`)
@@ -511,16 +660,40 @@ export const libraryTrackStore = {
   /**
    * 路径安全：track.path 解析后必须位于「该 uid 的 enabled 扫描根 ∪ config.download.dir」
    * 之内（path.relative 前缀校验，play.ts 同手法——防 DB 内异常路径逃逸）。
+   *
+   * #129/M3：比对前对根与待校验路径**同做 realpath**，与 normalizeScanRoots 口径一致。
+   * 扫描已按 realpath 形态的根 walk 并落库，若此处仍用 path.resolve 的字符串前缀比对，
+   * 一旦路径中含符号链接（realpath 与原写法不同）就会把合法文件判成越界 → 播放 403。
+   * realpath 失败（文件已删/无权限）回落 path.resolve，与改造前行为一致，不新增失败面。
    */
   isPathAllowed(uid: string, filePath: string): boolean {
-    const dirs = new Set<string>([path.resolve(config.download.dir)])
+    const dirs = new Set<string>()
+    const addDir = (p: string): void => {
+      const abs = path.resolve(p)
+      try {
+        dirs.add(fs.realpathSync(abs))
+      } catch {
+        dirs.add(abs)
+      }
+    }
+    addDir(config.download.dir)
     for (const r of scanRootStore.listByUid(uid)) {
-      if (r.enabled === 1) dirs.add(path.resolve(r.path))
+      if (r.enabled === 1) addDir(r.path)
     }
     const abs = path.resolve(filePath)
+    let target = abs
+    try {
+      target = fs.realpathSync(abs)
+    } catch {
+      target = abs
+    }
     for (const dir of dirs) {
-      const rel = path.relative(dir, abs)
+      const rel = path.relative(dir, target)
       if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) return true
+      // realpath 形态未命中时再用原始写法比一次：兼容「根做了 realpath、DB 里存的是
+      // 旧字符串路径」的历史行（升级前入库的数据），避免存量曲目升级后播放 403
+      const relRaw = path.relative(dir, abs)
+      if (relRaw !== '' && !relRaw.startsWith('..') && !path.isAbsolute(relRaw)) return true
     }
     return false
   },

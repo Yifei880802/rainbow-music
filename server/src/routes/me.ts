@@ -30,12 +30,24 @@ export interface MePluginOptions {
 /** 收藏 kind 白名单 */
 const FAVORITE_KINDS = ['track', 'playlist', 'square'] as const
 
-/** 扫描根默认值：容器内 data-share 共享下载目录（模块四扫描引擎同一口径） */
+/**
+ * 扫描根默认值：容器内 data-share 共享下载目录（模块四扫描引擎同一口径）。
+ * #129/Track A：RO_SCAN_ROOTS 改由包内 compose 模板字面直写为双根
+ * "/app/data/downloads:/app/data/library"（下载共享 rainbow-music + 音乐库导入共享
+ * rainbow-library），本常量仅在 RO_SCAN_ROOTS 未注入时兜底，语义与 v0.2.15 一致。
+ */
 const DEFAULT_SCAN_ROOT = '/app/data/downloads'
 
 /**
  * 扫描根契约：RO_SCAN_ROOTS（':' 分隔容器内路径）解析为可选集合；
  * 未设置/为空 → 仅默认根。去重保序。
+ *
+ * #129/Track A：该变量现为包内 compose 模板的字面值（双根），不再由回调渲染——fnOS 的
+ * compose up 只采用安装时保存的模板（架构级限制 #88），故本函数逻辑无需改动，天然解析出
+ * ["/app/data/downloads", "/app/data/library"]。
+ * 边界说明：本函数只做字符串去重，不做物理同源判定；「两个根指向同一物理目录导致曲库翻倍」
+ * （M3）由 scanner.ts 的 normalizeScanRoots（realpath + dev:ino 同源去重 + 嵌套剪枝）在扫描
+ * 入口统一兜底。此处向用户展示双根是正确 UX（按目录语义选择），物理去重发生在真正扫描时。
  */
 export function availableScanRoots(): string[] {
   const raw = process.env.RO_SCAN_ROOTS
