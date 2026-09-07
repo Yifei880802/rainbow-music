@@ -143,9 +143,10 @@ scripts/build-fpk.sh
 `config.ts` 行为要点：
 
 - **首启自动生成**：`config.yaml` 不存在时按内置默认值生成，并**随机生成强密码**（仅日志打印一次），禁止 admin/admin；
+- **加载期默认值深合并（#127）**：`loadConfig()` 把 YAML 与 `buildDefaultConfig()` 深合并——映射逐键递归，数组与标量以 YAML 值整体覆盖，**YAML 显式 null（含 `key:` 空值写法）视为「未提供」并回落默认值**。因此 `config.*` 各子树恒完整，消费侧裸访问不再 500（#126 在 `settings.ts` / `notify` 打的可选链降为冗余防线，保留不回收）。代价：**想关掉某项必须显式写 `false`，留空等于用默认值**（例如 `smokeTest.enabled` 的设计默认值是 `true`）。两处例外：① `auth.webLogin.password` 的合并默认值恒为 `''` 而非随机强密码——否则 `isPasswordConfigured()` 会由 false 变 true，把「尚未设置登录密码」的 400 明确提示退化为静默不可登录，且随机密码会随首次 PATCH 静默落盘；② `download.dir` / `sources.dir` 的相对/绝对回写标记与 `download.concurrency` 的「显式存在」标记均取自**原始 YAML**，不被合并污染（后者一旦被污染会恒为 true、永久关掉 `download.*` 的自适应并发）。`RO_*` 环境变量覆盖排在合并**之后**，恒最终生效。真机 `.fpk` 的 `config.yaml` 由 `fpk/cmd/_common` 的 `render_config()` 渲染、恒含完整块，故本合并对真机部署零行为变化，仅影响手工精简过的或第三方旧 config；
 - **路径语义**：`download.dir` / `sources.dir` 支持绝对路径（fnOS 常配 `/vol1/1000/downloads`），写回时保持原相对/绝对写法；
 - **环境变量覆盖**：`RO_SERVER_PORT` / `RO_SERVER_HOST` / `RO_AUTH_APIKEY` / `RO_LOG_LEVEL` / `RO_CONFIG` / `RO_DB_DIR`；
-- **运行时 patch**：设置页 PATCH 走 `patchConfig()` 深合并落盘；`server` / `auth` 等字段只落盘、需重启生效；
+- **运行时 patch**：设置页 PATCH 走 `patchConfig()` 深合并落盘（它的 null **视为覆盖**，允许显式清空字段，与加载期 `mergeInto()` 的「null = 未提供」刻意不同，勿互相替换）；`server` / `auth` 等字段只落盘、需重启生效；
 - **密钥脱敏**：API 读取只返回「是否已设置」布尔值，绝不回显明文。
 
 ### 下载管线性能加固配置项（`download.*`，全部可选，缺省用代码默认值）

@@ -267,7 +267,7 @@ sed -i.bak \
 
 **四、仍未处置的尾巴**
 
-- `server/src/core/config.ts` 的 `loadConfig()` 仍只做 `YAML.parse(raw) as RoConfig`、**不与 `buildDefaultConfig()` 深合并**——本批所有兜底都是在消费侧打补丁，根治需在加载层合并（属行为变更，需单独授权）。
+- `server/src/core/config.ts` 的 `loadConfig()` 仍只做 `YAML.parse(raw) as RoConfig`、**不与 `buildDefaultConfig()` 深合并**——本批所有兜底都是在消费侧打补丁，根治需在加载层合并（属行为变更，需单独授权）。〔#127 已处置：该合并已获授权并落地。`loadConfig()` 现按「YAML 显式 null 视为未提供」的口径深合并默认值，`auth.webLogin.password` 的合并默认值恒为空串（不注入随机密码），三项「来源标记」仍取自原始 YAML，`RO_*` 环境变量覆盖排在合并之后。消费侧的 `?.` / `=== true` 保留为冗余防线。副作用：手工精简过的 config 里「缺字段/留空」的有效值由「禁用」变「内置默认值」（`smokeTest.enabled` 默认 `true`），真机 fpk 模板恒写全、零影响。语义与依据见 `docs/DEVELOPMENT.md` 的「配置系统」节与 `API.md` 的 GET /api/v1/settings 契约注。〕
 - 7.3 数据层遗留（曲库翻倍风险、`@appdata` 历史文件）属 NAS 运维，已另行处置。
 - 向导字段是否隐藏需同步 `verify-ci.sh` 断言，另行决策；本批只做到「不误导」，未做到「不暴露」。
 

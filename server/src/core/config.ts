@@ -99,14 +99,26 @@ function randomStrongPassword(len = 18): string {
   return chars.join('')
 }
 
-/** 内置默认配置（结构与仓库 config.example.yaml 一致；密码随机生成） */
-function buildDefaultConfig(): RoConfig {
+/**
+ * 内置默认配置（结构与仓库 config.example.yaml 一致）。
+ *
+ * @param password webLogin.password 的取值；**只有缺省时才随机生成强密码**。两个调用方
+ *   口径不同，不可混用：
+ *   - `ensureConfigFile()` 走缺省（随机强密码 + 日志打印一次）：配置文件本就不存在，
+ *     密码必须当场生成并让用户看到，否则无人能登录；
+ *   - `loadConfig()` 的默认值深合并传 `''`：配置文件已存在、只是没写 password 字段，
+ *     此时注入随机密码会让 `isPasswordConfigured()` 由 false 变 true —— `routes/auth.ts`
+ *     那条「尚未设置登录密码，请在 config.yaml 的 auth.webLogin.password 配置后重启」的
+ *     400 明确提示，退化为「密码已设但无人知晓」的静默不可登录；且首次 PATCH 会经
+ *     `saveConfig()` 把这个随机密码静默落盘。空串保持「未配置」语义不变。
+ */
+function buildDefaultConfig(password?: string): RoConfig {
   return {
     server: { host: '0.0.0.0', port: 23330 },
     auth: {
       enabled: true,
       apiKey: '',
-      webLogin: { username: 'admin', password: randomStrongPassword() },
+      webLogin: { username: 'admin', password: password ?? randomStrongPassword() },
     },
     download: {
       dir: 'data/downloads',
@@ -186,15 +198,81 @@ function applyEnvOverrides(cfg: RoConfig): void {
   if (process.env.RO_LOG_LEVEL) cfg.log.level = process.env.RO_LOG_LEVEL
 }
 
+/**
+ * 是否「纯映射对象」。YAML.parse 的映射节点与本文件手写的默认值都满足；Date / Map / 数组
+ * 不算 —— 否则 YAML 把 `2026-09-05` 解析成 Date 时会被当作映射递归，而 `Object.entries(Date)`
+ * 为空，该字段就被静默丢弃、回落默认值。
+ */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false
+  const proto = Object.getPrototypeOf(v) as object | null
+  return proto === Object.prototype || proto === null
+}
+
+/** 从 YAML 解析结果里取「映射节点」：非映射（null / 数组 / 标量）一律视为未提供 */
+function asMapping(v: unknown): Record<string, unknown> | undefined {
+  return isPlainObject(v) ? v : undefined
+}
+
+/**
+ * 用内置默认值补齐 YAML 配置，返回结构完整的 RoConfig（#127：一次性根治消费侧裸访问 500）。
+ *
+ * 合并规则：双方均为映射时逐键递归；数组与标量以 YAML 值**整体覆盖**默认值（不做数组元素级
+ * 合并）；YAML 独有的键（`download.*` 性能加固项、`scrape.*` 等可选字段）原样保留。
+ *
+ * **null 语义（评审要求二选一，此处定为「未提供」）**：YAML 里的显式 null —— 含 `key:` 这种
+ * 空值写法，YAML.parse 出来就是 null —— 一律视为「该字段未提供」并回落内置默认值，**不**视为
+ * 「用户要求置空」。依据：
+ *   1. 合并结果才真正满足 RoConfig（布尔字段不会出现 null），消费侧无需再各自兜 null；
+ *   2. `download.dir:` 留空会让下方 `path.resolve` 抛 TypeError（启动即崩），回落默认值可免；
+ *   3. 与 `ensureConfigFile()` / `config.example.yaml` 的默认口径一致：文档写的默认就是实际默认；
+ *   4. 展示层（settings.ts 的 `=== true`）与调度器（scheduler.ts 的 `!enabled`）拿到的是同一个
+ *      非 null 布尔值，结构上不可能背离（#126 M1 那类「UI 显示启用、调度器禁用」不再可达）。
+ * 代价（已在 API.md / DEVELOPMENT.md 文档化）：想关掉某项必须显式写 `false`，留空等于用默认值。
+ *
+ * 影响面：真机 `.fpk` 的 config.yaml 由 `fpk/cmd/_common` 的 `render_config()` 渲染，恒含完整块
+ * （`embedCover` / `hotReload` / `concurrency` / `smokeTest.enabled` / `alert.*` 全部显式在位），
+ * 故本合并对真机部署零行为变化；仅对手工精简过的或第三方旧 config 生效（缺省项按上表回落默认值）。
+ *
+ * 凭据例外：默认值取 `buildDefaultConfig('')`，password 恒为空串而非随机强密码（理由见该函数注释）。
+ */
+function mergeWithDefaults(yamlCfg: Record<string, unknown>): RoConfig {
+  const merged = buildDefaultConfig('') as unknown as Record<string, unknown>
+  mergeInto(merged, yamlCfg)
+  return merged as unknown as RoConfig
+}
+
+/** 把 src 合并进 dst（原地修改 dst）：null / undefined 视为未提供并跳过，其余以 src 为准 */
+function mergeInto(dst: Record<string, unknown>, src: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(src)) {
+    if (v === undefined || v === null) continue
+    if (isPlainObject(v) && isPlainObject(dst[k])) {
+      mergeInto(dst[k], v)
+      continue
+    }
+    dst[k] = v
+  }
+}
+
 export function loadConfig(): RoConfig {
   const raw = fs.readFileSync(CONFIG_PATH, 'utf8')
-  const cfg = YAML.parse(raw) as RoConfig
-  // 记住 yaml 里原本的写法：绝对路径保持绝对（fnOS 下载目录常为绝对路径）
-  downloadDirWasRelative = !path.isAbsolute(String(cfg.download.dir))
-  sourcesDirWasRelative = !path.isAbsolute(String(cfg.sources.dir))
-  // 记录 download.concurrency 是否在 yaml 中显式存在（区分「用户配置」与「代码默认」）
-  const downloadRaw = (cfg as unknown as { download?: Record<string, unknown> }).download
-  downloadConcurrencyExplicit = !!downloadRaw && Object.prototype.hasOwnProperty.call(downloadRaw, 'concurrency')
+  // 空文件 / 全注释文件 → YAML.parse 返回 null，按「什么都没提供」处理（旧写法在此即崩）
+  const yamlCfg = asMapping(YAML.parse(raw)) ?? {}
+
+  // ── 三项「来源标记」必须取原始 YAML，不能被下面的默认值深合并污染 ──
+  const downloadYaml = asMapping(yamlCfg.download)
+  const sourcesYaml = asMapping(yamlCfg.sources)
+  // 记住 yaml 里原本的写法：绝对路径保持绝对（fnOS 下载目录常为绝对路径）。
+  // 字段缺省时按内置默认的相对路径判定 —— 与合并后的运行值一致，回写时仍相对化。
+  downloadDirWasRelative = !path.isAbsolute(String(downloadYaml?.dir ?? 'data/downloads'))
+  sourcesDirWasRelative = !path.isAbsolute(String(sourcesYaml?.dir ?? 'data/sources'))
+  // 记录 download.concurrency 是否在 yaml 中显式存在（区分「用户配置」与「代码默认」）。
+  // 深合并后 config.download.concurrency 恒存在，若改从合并结果判定就会恒为 true，
+  // 进而永久关闭 #6 的自适应并发 clamp(CPU核数, 2, 6)。
+  downloadConcurrencyExplicit = !!downloadYaml && Object.prototype.hasOwnProperty.call(downloadYaml, 'concurrency')
+
+  const cfg = mergeWithDefaults(yamlCfg)
+  // env 覆盖排在深合并之后：RO_AUTH_APIKEY / RO_SERVER_PORT 等必须最终生效，不被默认值盖掉
   applyEnvOverrides(cfg)
   // path.resolve 对绝对路径原样返回，相对路径相对项目根目录解析
   cfg.download.dir = path.resolve(ROOT_DIR, cfg.download.dir)
@@ -241,6 +319,11 @@ export function patchConfig(patch: DeepPartial<RoConfig>): RoConfig {
 
 type DeepPartial<T> = { [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P] }
 
+/**
+ * 运行时 patch 用的深合并（`patchConfig`）：null **视为覆盖**（允许显式清空字段）。
+ * 这与加载期 `mergeInto()` 的「null = 未提供」刻意不同，勿互相替换：前者承载用户主动提交的
+ * 修改意图，后者只做配置加载时的默认值补齐。
+ */
 function deepMerge(target: Record<string, unknown>, patch: Record<string, unknown>): void {
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue

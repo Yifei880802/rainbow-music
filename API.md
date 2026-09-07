@@ -590,7 +590,7 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 }
 ```
 
-> **契约注（#126 评审 m2）**：`smokeTest` 块及其下各字段（含 `alert.bark` / `alert.serverChan` 子树）**恒出现**，不随 `config.yaml` 是否写了 `smokeTest:` 而缺省；`config.yaml` 缺对应子树时，**布尔字段回落 `false`**（`enabled` / `checkLyric` / `checkPic` / `alert.*.enabled` 用 `=== true` 或 `?? false` 判定，故 YAML 空值 `enabled:` 解析出的 `null` 同样回落 `false`，与调度器的 truthiness 消费语义一致），**字符串/数值字段回落默认值**（`cron` → `0 6 * * *`、`keyword` → `周杰伦`、`alertThreshold` → `2`、`bark.serverUrl` → `https://api.day.app`），**密钥字段只回传 `*Set` 布尔**（`deviceKeySet` / `sendKeySet` / `apiKeySet`）。即：该端点恒返回 200 且结构完整，前端可直接按上表结构取值，无需再做存在性判断。
+> **契约注（#126 评审 m2；#127 起口径更新）**：`smokeTest` 块及其下各字段（含 `alert.bark` / `alert.serverChan` 子树）**恒出现**，不随 `config.yaml` 是否写了 `smokeTest:` 而缺省。自 #127 起 `loadConfig()` 会把 YAML 与内置默认值（`server/src/core/config.ts` 的 `buildDefaultConfig()`，口径同 `config.example.yaml`）**深合并**，故 `config.yaml` 里**缺字段或写成空值**（`enabled:` → YAML `null`）时一律回落内置默认值：`enabled` / `checkLyric` / `checkPic` → `true`，`alert.bark.enabled` / `alert.serverChan.enabled` → `false`，`cron` → `0 6 * * *`，`keyword` → `周杰伦`，`alertThreshold` → `2`，`bark.serverUrl` → `https://api.day.app`。**要关掉某项必须显式写 `false`，留空等于用默认值。**（#127 之前是「缺省/空值一律回落 `false`」，此为有意的行为变更；真机 `.fpk` 的 `config.yaml` 由安装回调渲染、恒含完整块，故对真机部署零影响。）展示层用 `=== true` 判定，调度器 `scheduler.ts` 用 `if (!config.smokeTest.enabled) return` 判定，深合并后两者拿到的是**同一个非 null 布尔值**，恒同真假——不会重现「UI 显示启用、调度器实际禁用」的背离。**密钥字段只回传 `*Set` 布尔**（`deviceKeySet` / `sendKeySet` / `apiKeySet`）；`auth.webLogin.password` 的合并默认值恒为**空串**而非随机强密码，故未配密码时 `isPasswordConfigured()` 仍为 `false`、登录接口仍返回 400「尚未设置登录密码…」的明确提示（随机强密码只在配置文件本身不存在、由首启自动生成时产生，并仅在日志打印一次）。即：该端点恒返回 200 且结构完整，前端可直接按上表结构取值，无需再做存在性判断。
 
 ### PATCH /api/v1/settings
 

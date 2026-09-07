@@ -39,9 +39,11 @@ function safeView() {
   return {
     auth: {
       // 只回传是否已设置 API Key，绝不回传明文（明文仅在生成的那一次响应里出现）
-      // ?. 兜底（评审 #126 M2）：loadConfig 从不访问 cfg.auth（仅 RO_AUTH_APIKEY 存在时
-      // 才在 applyEnvOverrides 里触碰，而 fpk compose 未设置该变量），故旧 config 缺顶层
-      // auth: 块时进程可正常启动，但此处裸访问会抛 TypeError → GET /settings 500。
+      // 这里的 ?. 原为评审 #126 M2 而加：当时 loadConfig 不与默认值合并、也从不访问 cfg.auth
+      // （仅 RO_AUTH_APIKEY 存在时才在 applyEnvOverrides 里触碰，而 fpk compose 未设该变量），
+      // 故旧 config 缺顶层 auth: 块时进程可正常启动、但此处裸访问抛 TypeError → GET /settings 500。
+      // #127 起 loadConfig 已深合并 buildDefaultConfig()，config.auth 恒存在，?. 降为冗余防线；
+      // 按「不引入新风险」原则保留不回收（回收只省一个 ?.，却把本端点重新绑死在加载层实现上）。
       apiKeySet: !!config.auth?.apiKey,
     },
     download: {
@@ -62,16 +64,19 @@ function safeView() {
       autoOnComplete: config.scrape?.autoOnComplete !== false,
     },
     smokeTest: {
-      // 防御性可选链 + 空值兜底（默认值取自 config.ts buildDefaultConfig）：
-      // loadConfig 只做 YAML.parse as RoConfig、不与默认值合并，旧 config.yaml 或手动
-      // 精简过、缺 smokeTest / smokeTest.alert 子树时，直接链式访问会抛 TypeError → 500。
-      // 与上方 scrape 的 ?. 风格对齐（审查 t122 M2）。
+      // 防御性可选链 + 空值兜底（默认值与 config.ts buildDefaultConfig 同源），
+      // 与上方 scrape 的 ?. 风格对齐（审查 t122 M2）。#127 起 loadConfig 已深合并默认值，
+      // smokeTest 及其 alert 子树恒存在，下列 ?. / ?? 均为冗余防线，保留不回收。
       // 布尔字段用 === true 而非 ?? true（评审 #126 M1）：运行时消费方是 truthiness 判定
-      // （scheduler.ts `if (!config.smokeTest.enabled) return`、smoke/index.ts `if (...checkLyric)`），
-      // YAML 空值（`enabled:` → null）若用 ?? true 兜底，UI 显示「已勾选」而调度器实际禁用，
-      // 且前端全量 PATCH 会把伪造的 true 落盘、静默开启每日 06:00 冒烟任务。=== true 使
-      // null / 缺失一律回落 false，与消费方语义严格一致（alert.bark/serverChan.enabled 用
-      // ?? false 已等价于 === true，对 null 同样回落 false，故不动）。
+      // （scheduler.ts `if (!config.smokeTest.enabled) return`、smoke/index.ts `if (...checkLyric)`）。
+      // 当时的问题是 YAML 空值（`enabled:` → null）用 ?? true 兜底会造成 UI 显示「已勾选」
+      // 而调度器实际禁用，且前端全量 PATCH 会把伪造的 true 落盘。
+      // #127 后的语义：null / 缺字段已在**加载层**回落 buildDefaultConfig 的值（enabled /
+      // checkLyric / checkPic 默认 true，alert.*.enabled 默认 false），此处拿到的是非 null 布尔值，
+      // 故 === true 与调度器的 truthiness 判定对同一输入恒同真假，展示层与调度器不可能背离。
+      // 注意这是行为变更：字段缺省/留空时有效值由「禁用」变「启用」——与 config.example.yaml
+      // 和真机 fpk 模板的设计默认值一致（真机模板恒显式写全，零影响）。要关必须显式写 false。
+      // 保留 === true 而非改回直接透传：万一将来加载层合并被移除，这里仍与消费方语义一致。
       // 字符串/数值字段保留 ?? 兜底：消费方用 || 同款默认值（scheduler.ts `cron || '0 6 * * *'`），已核实一致。
       enabled: config.smokeTest?.enabled === true,
       cron: config.smokeTest?.cron ?? '0 6 * * *',
