@@ -59,21 +59,25 @@ function safeView() {
       autoOnComplete: config.scrape?.autoOnComplete !== false,
     },
     smokeTest: {
-      enabled: config.smokeTest.enabled,
-      cron: config.smokeTest.cron,
-      keyword: config.smokeTest.keyword,
-      checkLyric: config.smokeTest.checkLyric,
-      checkPic: config.smokeTest.checkPic,
-      alertThreshold: config.smokeTest.alertThreshold,
+      // 防御性可选链 + 空值兜底（默认值取自 config.ts buildDefaultConfig）：
+      // loadConfig 只做 YAML.parse as RoConfig、不与默认值合并，旧 config.yaml 或手动
+      // 精简过、缺 smokeTest / smokeTest.alert 子树时，直接链式访问会抛 TypeError → 500。
+      // 与上方 scrape 的 ?. 风格对齐；config 完整时取值不变，仅缺失时回落默认（审查 t122 M2）。
+      enabled: config.smokeTest?.enabled ?? true,
+      cron: config.smokeTest?.cron ?? '0 6 * * *',
+      keyword: config.smokeTest?.keyword ?? '周杰伦',
+      checkLyric: config.smokeTest?.checkLyric ?? true,
+      checkPic: config.smokeTest?.checkPic ?? true,
+      alertThreshold: config.smokeTest?.alertThreshold ?? 2,
       alert: {
         bark: {
-          enabled: config.smokeTest.alert.bark.enabled,
-          serverUrl: config.smokeTest.alert.bark.serverUrl,
-          deviceKeySet: !!config.smokeTest.alert.bark.deviceKey,
+          enabled: config.smokeTest?.alert?.bark?.enabled ?? false,
+          serverUrl: config.smokeTest?.alert?.bark?.serverUrl ?? 'https://api.day.app',
+          deviceKeySet: !!config.smokeTest?.alert?.bark?.deviceKey,
         },
         serverChan: {
-          enabled: config.smokeTest.alert.serverChan.enabled,
-          sendKeySet: !!config.smokeTest.alert.serverChan.sendKey,
+          enabled: config.smokeTest?.alert?.serverChan?.enabled ?? false,
+          sendKeySet: !!config.smokeTest?.alert?.serverChan?.sendKey,
         },
       },
     },
