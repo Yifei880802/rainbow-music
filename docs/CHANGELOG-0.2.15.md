@@ -14,7 +14,7 @@
 | 提交 | 时间 | 说明 | 规模 | 状态 |
 |---|---|---|---|---|
 | `0dd5ed2` | 2026-09-04 10:34 | `feat(fpk): v0.2.15 下载目录改挂 fnOS data-share，遗留 download.dir 自动收敛` | 18 文件 +301/−66 | **已发布**（tag `v0.2.15`） |
-| `933fbe7` | 2026-09-04 16:17 | `ci(release): 发布的 fpk compose 钉住镜像 index digest` | 7 文件 +100/−17 | 已提交，**未推送、未打 tag** |
+| `933fbe7` | 2026-09-04 16:17 | `ci(release): 发布的 fpk compose 钉住镜像 index digest` | 7 文件 +100/−17 | 已提交，**未推送、未打 tag**〔#126 时点限定：此为撰写时（2026-09-04）状态；该 commit 已于 2026-09-05 经 GitHub REST API 推送至远端 main，tag 仍未打〕 |
 
 ---
 
@@ -210,7 +210,7 @@ sed -i.bak \
   提供运维手动 copy-only（no-clobber）流程与校验步骤。
 - **未改动服务端逻辑**，`fpk/manifest` 也未因 digest pin 而 bump 版本——版本由 git tag
   推导，bump 会谎称存在一次并未发生的发布。
-- **未推送 `933fbe7`**，未为其打 tag，未产生新的 Release。
+- **未推送 `933fbe7`**，未为其打 tag，未产生新的 Release。〔时点限定（#126 补注）：此为本文撰写（2026-09-04）时的状态；该 commit 已于 2026-09-05 经 GitHub REST API 推送至远端 main。〕
 
 ---
 
@@ -235,11 +235,41 @@ sed -i.bak \
 
 ### 7.2 代码层遗留（均为既有问题，非本轮引入）
 
+> 下表为本文撰写时点（2026-09-04）的快照：除第一行两处用〔#126 订正〕标出的事实错误已就地订正外，正文（含「未修、待决策」等当时状态）保留不改；**三项均已在后续批次处置**，落地结果与剩余尾巴见**表末「后记」**（#126 补）。
+
 | 位置 | 问题 | 状态 |
 |---|---|---|
-| `server/src/routes/settings.ts:70` | `safeView()` 里 `config.smokeTest.alert.bark.enabled` 无可选链，而紧邻的 PATCH 路径（149–150 行）**有**，类型也声明两个子树皆可选。任何带 `smokeTest` 但无 `alert:` 子树的 config 会让 `/api/v1/settings` 500 | 自 v0.2.1 存在，两轮闸门均未触发；**未修**，待决策 |
+| `server/src/routes/settings.ts` 的 `safeView()` | `safeView()` 里 `config.smokeTest.alert.bark.enabled` 无可选链，而紧邻的 PATCH 路径**有**。〔#126 订正一：原写「类型也声明两个子树皆可选」与 `server/src/core/config.ts` 不符——`RoConfig` 的 `smokeTest` 与其 `alert` 子树均为**必选**，全类型仅 `scrape?` 可选；正因类型声称必选，编译器不会提醒运行时缺失，可选链才是唯一防线。订正二：原文引用的行号（`settings.ts:70`、PATCH「149–150 行」）已随后续修复漂移，改为符号引用〕任何带 `smokeTest` 但无 `alert:` 子树的 config 会让 `/api/v1/settings` 500 | 自 v0.2.1 存在，两轮闸门均未触发；**未修**，待决策 |
 | `fpk/cmd/_common` | v0.2.11 的注释声称 docker 化的 `rb_psql`（容器内 uid 0）是网关补写的可行配方。实测 40/40 轮全部 `permission denied … /var/run/docker.sock` | 注释**与事实相反**；回调以 uid 975 运行，永远拿不到 docker.sock。良性（fail-safe），但注释该改 |
 | `fpk/wizard/install`、`fpk/wizard/config` | `wizard_scan_dirs` 仍在随包发布，但经 `.fpk` 路径**永不生效**（fnOS 不采用回调渲染的挂载行） | 要么删字段，要么停止暗示它有用 |
+
+#### 后记（后续批次已处置，#126 于 2026-09-05 补）
+
+三维评审（任务 #126）复核上表三项的修复时发现：三项本身已落地，但修复过程又引入了归因错误并暴露出三处同型的新缺陷，一并记此。
+
+**一、上表三项的落地结果**
+
+| 表内项 | 落地 | 结果 |
+|---|---|---|
+| `safeView()` 的 `smokeTest.alert.bark` 无可选链 | `e0b0786` | 已补可选链兜底（`?.` + `?? false`），缺 `alert:` 子树的 config 不再 500 |
+| `_common` 的 `rb_psql` 注释与事实相反 | `e0b0786` | `rb_psql` docstring 已改写为「适用边界」如实注释（docker 通道仅 root 语境有效；回调 uid 975 对 `/var/run/docker.sock` EACCES，t114/t117 实证）。#126 又清掉同仓剩余两处同型措辞：`_common` 内 `fix_gateway_socket_watch` 的 watcher heredoc 头注释（`<<'WATCH'` 内的注释会**落盘到 NAS 产物**）与 `docs/FNOS-DEPLOY.md` 的「真机探针 20 余次全部成功的配方」表述；现全仓检索该措辞已归零（本行故意不自引用原串，否则该检索永远无法归零） |
+| `wizard_scan_dirs` 随包发布但永不生效 | `e6e6452` | **未删字段**（与 install/config/upgrade 三个回调及 `scan-dirs.conf` 持久化共用，且默认 `RO_SCAN_ROOTS` 仍被 `server/src/routes/me.ts` 消费，强删有安装/升级断链风险）；改为在 `fpk/wizard/install`、`fpk/wizard/config` 的 helpText 标注不生效 + `_common.render_scan_mounts` 注释订正归因 |
+
+**二、#126 修正的上批遗留（归因错误）**
+
+`e6e6452` 写的 helpText 与 `_common` 注释把不生效的原因归为「fnOS 剥离渲染的挂载锚点、故走 else 分支」，与仓内已有取证相矛盾：`docs/FNOS-DEPLOY.md` 早已明文更正「剥离说系误诊」，且真机取证证实 **fnOS 保存的 compose 里确有渲染行**（`- …:/app/data/scan/1` 挂载行与拼接后的 `RO_SCAN_ROOTS` 均在位），真因是 **fnOS compose up 采用安装时保存的内部模板、不读宿主渲染文件**（架构级遗留 #88，见该文档「#88 实测发现」第 2 条）。因 helpText 随 `.fpk` 分发后不发版就无法更正，#126 已把 `wizard/install`、`wizard/config`、`_common`（含 `upgrade_callback` 头注释）四处归因统一改为已实证表述，并删除「锚点被剥离 / else 分支」字样；「额外扫描目录当前不生效」的结论保留。同时按评审 M7 给 `docs/USER-GUIDE.md`（安装向导章、「NAS 本地音乐库」章）与 `docs/FNOS-DEPLOY.md`（「配置与挂载机制」章、「扫描根不可见排查」章）补上同口径 caveat 标注与指向 #88 实测发现的交叉引用（只加标注，未重写章节）。
+
+**三、#126 新发现并修复的同型缺陷（三维评审的影响面维度）**
+
+- **布尔字段兜底语义背离**（评审认定为影响面最重要发现）：`safeView()` 里 `enabled` / `checkLyric` / `checkPic` 原用 `?? true` 兜底，而运行时消费方是 truthiness 判定（`server/src/core/smoke/scheduler.ts` 的 `if (!config.smokeTest.enabled) return`、`server/src/core/smoke/index.ts`）。YAML 空值（`enabled:` → `null`）场景下 UI 显示「已勾选」而调度器实际禁用，且前端全量 PATCH 会把伪造的 `true` 落盘、静默开启每日 06:00 冒烟任务。已改为 `=== true`（`null` / 缺失一律回落 `false`，与消费方语义严格一致）；字符串/数值字段（`cron` / `keyword` / `alertThreshold` / `bark.serverUrl`）保留 `??` 兜底不动（消费方用 `||` 同款默认值，已核实一致）。契约已补进 `API.md` 的 GET /api/v1/settings 示例旁。
+- **`safeView()` 的 `config.auth.apiKey` 裸访问**：`loadConfig()` 从不访问 `cfg.auth`（仅 `RO_AUTH_APIKEY` 存在时才在 `applyEnvOverrides` 里触碰，而 fpk compose 未设置该变量），故旧 config 缺顶层 `auth:` 块时进程可正常启动、但 GET /settings 抛 TypeError → 500（与本表第一行同型）。已改 `config.auth?.apiKey`。（对比：`download` / `sources` 因 `loadConfig()` 内部无可选链地访问其子字段而结构性保证存在，缺则启动即失败，不属同类风险。）
+- **`server/src/core/notify/index.ts` 同类裸访问**：`config.smokeTest.alert.bark` / `.serverChan`。上两项修好后 GET 恢复 200，设置页「测试告警推送」按钮变为可达，点击即 POST /settings/notify/test → notify 500（**新可达崩溃面**）。已补可选链，子树缺失等价于「该渠道未启用」→ `skipped`，不改业务语义。
+
+**四、仍未处置的尾巴**
+
+- `server/src/core/config.ts` 的 `loadConfig()` 仍只做 `YAML.parse(raw) as RoConfig`、**不与 `buildDefaultConfig()` 深合并**——本批所有兜底都是在消费侧打补丁，根治需在加载层合并（属行为变更，需单独授权）。
+- 7.3 数据层遗留（曲库翻倍风险、`@appdata` 历史文件）属 NAS 运维，已另行处置。
+- 向导字段是否隐藏需同步 `verify-ci.sh` 断言，另行决策；本批只做到「不误导」，未做到「不暴露」。
 
 ### 7.3 数据层遗留
 

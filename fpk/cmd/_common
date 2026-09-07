@@ -253,18 +253,27 @@ render_scan_mounts() {
     # 幂等：先清理历史渲染的挂载行，再按锚点重建，同值重复渲染输出完全一致；
     #       RO_SCAN_ROOTS 按行前缀整行替换，兼容占位符与已渲染两种状态
     # 容错：目录不存在仅 log_info 警告并跳过，绝不 exit 1（防应用起不来）
-    # v0.2.2：fnOS 升级流程会移除 compose 中 __XXX__ 命名空间内容（旧版 __WIZ_SCAN_ROOTS__
-    #       env 行与 __WIZ_SCAN_VOLUMES__ 注释锚点均被剥离）；v0.2.2 起模板默认值直写、
-    #       锚点改为 rainbow-scan-volumes-anchor；锚点不存在时仅跳过挂载插入（不报错），
-    #       RO_SCAN_ROOTS 行不存在时 sed 无匹配同样静默（服务端 env 缺失时兜底为默认下载目录）
+    # v0.2.2：当时观测到升级后 compose 中 __XXX__ 命名空间内容不再出现（旧版 __WIZ_SCAN_ROOTS__
+    #       env 行与 __WIZ_SCAN_VOLUMES__ 注释锚点，打包版 2235B → 落盘 1274B），故 v0.2.2 起
+    #       模板默认值直写、锚点改为 rainbow-scan-volumes-anchor；锚点不存在时仅跳过挂载插入
+    #       （不报错），RO_SCAN_ROOTS 行不存在时 sed 无匹配同样静默（服务端 env 缺失时兜底为
+    #       默认下载目录）。该观测的归因后经 #88 实测更正，见下方「⚠️ 当前实效」。
     # v0.2.4：fnOS 升级流程会带空 wizard 参数重跑 install_callback（真机实测：升级后
     #       scan-dirs.conf 被空参调用清空，mtim 与升级时刻一致）——空参不再覆盖持久化，
     #       只有向导有非空值才写入；全新安装空值与升级重跑空参都回落回读/默认，行为安全
-    # ⚠️ 当前实效（审查 t122 m4 实证， wizard_scan_dirs 字段保留但标注不生效）：
-    #       本函数向「回调期渲染的 compose」插入额外扫描挂载与 RO_SCAN_ROOTS，但 fnOS
-    #       从自存模板运行容器、且该模板的锚点（rainbow-scan-volumes-anchor / __WIZ_SCAN_VOLUMES__）
-    #       常被剥离（即下方 else 分支）→ 向导填的「额外扫描目录」经 .fpk 安装实际不生效；
+    # ⚠️ 当前实效（t122 m4 提出；归因按 #126 评审订正为 docs/FNOS-DEPLOY.md 的已实证表述）：
+    #       本函数向「回调期渲染的 compose」插入额外扫描挂载与 RO_SCAN_ROOTS，插入本身是
+    #       成功的——真机取证（FNOS-DEPLOY.md「data-share 与「扫描目录」重叠」章）证实 fnOS
+    #       保存的 compose 里确有渲染行（RO_SCAN_ROOTS 含 /app/data/scan/1、挂载行在位）。
+    #       不生效的真因是：fnOS 从安装时保存的内部模板启动容器，回调期渲染的
+    #       挂载行不被采用（架构级遗留 #88，见
+    #       FNOS-DEPLOY.md「#88 实测发现」章第 2 条）→ 运行容器内 RO_SCAN_ROOTS 仍为默认值、
+    #       /app/data/scan 目录不存在 → 向导填的「额外扫描目录」经 .fpk 安装实际不生效；
     #       仅 compose 模板自带的默认 RO_SCAN_ROOTS="/app/data/downloads"（下载目录）恒生效。
+    #       订正：旧注曾把真因写成「fnOS 丢弃锚点、故走下方 else 分支」，FNOS-DEPLOY.md
+    #       「根因二：download.dir 指向宿主绝对路径但容器从不挂载」章已明文更正该说法系误诊
+    #       ——限制只针对「回调期/事后渲染」，不针对包内模板字面挂载行；
+    #       下方 else 分支只是兼容旧锚点的容错路径，并非常态。
     #       不删除本函数/字段：它与 install/config/upgrade 三个回调及 SCAN_DIRS_FILE 持久化
     #       共用，且默认 RO_SCAN_ROOTS 仍被 server 消费（me.ts）；强删有安装/升级断链风险。
     #       用户-facing 误导由 wizard/install、wizard/config 的 helpText 标注消除。
@@ -293,7 +302,7 @@ render_scan_mounts() {
     done < <(parse_scan_dirs "$raw")
     # 幂等重建：先删历史挂载行（仅 volumes 段的 - xxx:/app/data/scan/N 形态，
     # 不会误伤 RO_SCAN_ROOTS 值行），再在锚点注释行后插入当前挂载集；
-    # 兼容 v0.2.1 旧锚点（fnOS 若未剥离仍可匹配），锚点不存在时跳过插入不报错
+    # 兼容 v0.2.1 旧锚点（模板中仍存在时同样可匹配），锚点不存在时跳过插入不报错
     sed -i.bak '/^[[:space:]]*- .*:\/app\/data\/scan\/[0-9][0-9]*$/d' "$COMPOSE_FILE"
     rm -f "${COMPOSE_FILE}.bak"
     if [ -s "$vol_tmp" ]; then
@@ -304,7 +313,7 @@ render_scan_mounts() {
             sed -i.bak "/__WIZ_SCAN_VOLUMES__/r ${vol_tmp}" "$COMPOSE_FILE"
             rm -f "${COMPOSE_FILE}.bak"
         else
-            log_info "compose 锚点不存在（可能被 fnOS 剥离），跳过扫描目录挂载插入：${vol_tmp} 行"
+            log_info "compose 锚点不存在，跳过扫描目录挂载插入：${vol_tmp} 行"
         fi
     fi
     rm -f "$vol_tmp"
@@ -366,7 +375,7 @@ rb_psql() {
     # 通道原理：宿主直跑 psql 被 pg peer 认证拒绝（pg_hba local peer + pg_ident
     # trim_root 仅映射 root），故改经 docker 容器（默认 uid 0）执行宿主 psql：
     # 容器进程经共享 unix socket 的 peer 凭据为 root，trim_root 放行。
-    # ⚠️ 适用边界（t114/t117 真机实证，勿再误判为「回调内 100% 成功」）：
+    # ⚠️ 适用边界（t114/t117 真机实证，勿再误判为「回调内必然成功」）：
     #   该 docker 通道仅在 root 语境有效——手动 root 探针 20 余次成功即此语境。
     #   生命周期回调以应用专用用户 uid 975 执行，对 /var/run/docker.sock 无权限
     #   （EACCES）→ docker CLI 在回调内不可用 → rb_psql 实际失败（t114：回调内
@@ -473,8 +482,12 @@ render_gateway_watch_script() {
 # 背景（v0.2.10 真机实测深层根因）：fnOS 回调以应用专用用户（uid 975）执行，
 # 宿主直跑 psql 被 pg peer 认证拒绝（pg_ident trim_root 仅映射 root）——
 # v0.2.10 的 20 轮 UPDATE 曾全部被静默吞掉。SQL 改经 docker 容器执行
-# （容器 uid 0，共享 unix socket 的 peer 凭据为 root，trim_root 放行；
-# 真机探针 20 余次 100% 成功的配方）。
+# （容器 uid 0，共享 unix socket 的 peer 凭据为 root，trim_root 放行）。
+# ⚠️ 该 docker 通道仅在 root 语境有效（手动 root 探针 20 余次成功即此语境）；
+#   回调与本 watcher 以 uid 975 运行，对 /var/run/docker.sock 无权限（EACCES）
+#   → 20/20 轮实际全败（t114/t117 真机实证）。网关补写在真机靠 heal 手修配方
+#   （root 语境）+ 诊断横幅兜底；详见 _common 中 rb_psql 的「适用边界」注释与
+#   docs/FNOS-DEPLOY.md t117 段。
 #
 # 逻辑（30 秒一轮 × 20 轮 = 10 分钟窗口）：
 #   - 每轮查两表 gateway_socket 非空行数（c1/c2），逐轮写一行到 @LOG@

@@ -7,9 +7,10 @@
 #
 # v0.2.1 真机升级失败复盘（fnOS TRIM ME mini，两次 update/task 均于 ~4 秒内失败，
 # 错误码 10374「执行更新回调脚本失败」，compose 的 sed 渲染从未执行到——mtim 未变）：
-#   1. fnOS 升级流程会移除 compose 中 __XXX__ 命名空间内容：__WIZ_SCAN_ROOTS__ env 行与
-#      __WIZ_SCAN_VOLUMES__ 注释锚点均被剥离（打包版 2235B → 落盘 1274B）→ v0.2.2 起模板
-#      默认值直写 + 锚点改名（见 _common.render_scan_mounts）
+#   1. 当时观测到升级后 compose 中 __XXX__ 命名空间内容不再出现：__WIZ_SCAN_ROOTS__ env 行与
+#      __WIZ_SCAN_VOLUMES__ 注释锚点（打包版 2235B → 落盘 1274B）→ v0.2.2 起模板
+#      默认值直写 + 锚点改名（见 _common.render_scan_mounts；该观测的归因后经 #88 实测更正，
+#      真因是 fnOS 采用安装时内部保存的模板、不读宿主渲染文件）
 #   2. 回调执行环境疑似与安装回调不同（TRIM_* 注入不完整或缺失），set -eu 在早期某行
 #      直接崩溃且未经过 log_error（fnOS outputText 为空）→ 本脚本改为防御式：不用 -e、
 #      关键变量 fnOS 标准布局兜底、每步显式容错，并落步进探针（.rb-upgrade-probe/）
@@ -59,8 +60,9 @@ rb_step "04b-sharelink"
 normalize_download_dir || rb_step "04c-normalize-ddir-FAILED"
 rb_step "04c-normalize-ddir"
 
-# 扫描挂载渲染（幂等；fnOS 已剥离 RO_SCAN_ROOTS 行时 sed 无匹配静默通过，
-# 服务端对 env 缺失兜底为默认下载目录，行为一致）
+# 扫描挂载渲染（幂等；compose 中无 RO_SCAN_ROOTS 行时 sed 无匹配静默通过，
+# 服务端对 env 缺失兜底为默认下载目录，行为一致。注：渲染行即使写入也不被 fnOS
+# 采用——架构级遗留 #88，见 _common.render_scan_mounts 的「⚠️ 当前实效」注释）
 render_scan_mounts || rb_step "05-render-FAILED"
 rb_step "05-render"
 

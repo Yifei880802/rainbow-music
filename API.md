@@ -590,6 +590,8 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 }
 ```
 
+> **契约注（#126 评审 m2）**：`smokeTest` 块及其下各字段（含 `alert.bark` / `alert.serverChan` 子树）**恒出现**，不随 `config.yaml` 是否写了 `smokeTest:` 而缺省；`config.yaml` 缺对应子树时，**布尔字段回落 `false`**（`enabled` / `checkLyric` / `checkPic` / `alert.*.enabled` 用 `=== true` 或 `?? false` 判定，故 YAML 空值 `enabled:` 解析出的 `null` 同样回落 `false`，与调度器的 truthiness 消费语义一致），**字符串/数值字段回落默认值**（`cron` → `0 6 * * *`、`keyword` → `周杰伦`、`alertThreshold` → `2`、`bark.serverUrl` → `https://api.day.app`），**密钥字段只回传 `*Set` 布尔**（`deviceKeySet` / `sendKeySet` / `apiKeySet`）。即：该端点恒返回 200 且结构完整，前端可直接按上表结构取值，无需再做存在性判断。
+
 ### PATCH /api/v1/settings
 
 局部更新配置（下载 / 刮削 / 冒烟测试 / 告警）。只传要改的字段。
