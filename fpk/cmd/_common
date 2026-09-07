@@ -230,10 +230,12 @@ normalize_download_dir() {
     return 0
 }
 
-# ---------- 音乐库扫描目录渲染（v0.2.1：统一网关 + 本地音乐库） ----------
+# ---------- 音乐库扫描目录输入留档（v0.2.1 引入渲染；#129/Track A 起降级为只写不读） ----------
 
-# 向导扫描目录选择的持久化记录：落在 ${TRIM_PKGETC}（飞牛托管 etc，升级不丢），
-# 供 upgrade_callback 在无向导值时恢复用户选择（老安装升级后同样获得新挂载）
+# 向导「音乐库扫描目录」输入的只读留档：落在 ${TRIM_PKGETC}（飞牛托管 etc，升级不丢）。
+# #129/Track A 起**只写不读**——不再供 upgrade_callback 恢复挂载（该职责对 Docker 形态
+# fpk 恒不生效，见下方 render_scan_mounts 注释与 docs/FNOS-DEPLOY.md 的「#88 实测发现」）。
+# 文件保留不删（避免动用户数据），留作诊断痕迹与将来 Track B 的输入参考。
 SCAN_DIRS_FILE="${TRIM_PKGETC:-}/scan-dirs.conf"
 
 parse_scan_dirs() {
@@ -247,79 +249,61 @@ parse_scan_dirs() {
 }
 
 render_scan_mounts() {
-    # 渲染 compose 的扫描目录挂载行与 RO_SCAN_ROOTS 环境变量：
-    #   - 传非空参：以向导值为准，并把原始输入持久化到 ${SCAN_DIRS_FILE}
-    #   - 不传参或空串：回读持久化记录；无记录则渲染默认（仅下载目录）
-    # 幂等：先清理历史渲染的挂载行，再按锚点重建，同值重复渲染输出完全一致；
-    #       RO_SCAN_ROOTS 按行前缀整行替换，兼容占位符与已渲染两种状态
-    # 容错：目录不存在仅 log_info 警告并跳过，绝不 exit 1（防应用起不来）
-    # v0.2.2：当时观测到升级后 compose 中 __XXX__ 命名空间内容不再出现（旧版 __WIZ_SCAN_ROOTS__
-    #       env 行与 __WIZ_SCAN_VOLUMES__ 注释锚点，打包版 2235B → 落盘 1274B），故 v0.2.2 起
-    #       模板默认值直写、锚点改为 rainbow-scan-volumes-anchor；锚点不存在时仅跳过挂载插入
-    #       （不报错），RO_SCAN_ROOTS 行不存在时 sed 无匹配同样静默（服务端 env 缺失时兜底为
-    #       默认下载目录）。该观测的归因后经 #88 实测更正，见下方「⚠️ 当前实效」。
-    # v0.2.4：fnOS 升级流程会带空 wizard 参数重跑 install_callback（真机实测：升级后
-    #       scan-dirs.conf 被空参调用清空，mtim 与升级时刻一致）——空参不再覆盖持久化，
-    #       只有向导有非空值才写入；全新安装空值与升级重跑空参都回落回读/默认，行为安全
-    # ⚠️ 当前实效（t122 m4 提出；归因按 #126 评审订正为 docs/FNOS-DEPLOY.md 的已实证表述）：
-    #       本函数向「回调期渲染的 compose」插入额外扫描挂载与 RO_SCAN_ROOTS，插入本身是
-    #       成功的——真机取证（FNOS-DEPLOY.md「data-share 与「扫描目录」重叠」章）证实 fnOS
-    #       保存的 compose 里确有渲染行（RO_SCAN_ROOTS 含 /app/data/scan/1、挂载行在位）。
-    #       不生效的真因是：fnOS 从安装时保存的内部模板启动容器，回调期渲染的
-    #       挂载行不被采用（架构级遗留 #88，见
-    #       FNOS-DEPLOY.md「#88 实测发现」章第 2 条）→ 运行容器内 RO_SCAN_ROOTS 仍为默认值、
-    #       /app/data/scan 目录不存在 → 向导填的「额外扫描目录」经 .fpk 安装实际不生效；
-    #       仅 compose 模板自带的默认 RO_SCAN_ROOTS="/app/data/downloads"（下载目录）恒生效。
-    #       订正：旧注曾把真因写成「fnOS 丢弃锚点、故走下方 else 分支」，FNOS-DEPLOY.md
-    #       「根因二：download.dir 指向宿主绝对路径但容器从不挂载」章已明文更正该说法系误诊
-    #       ——限制只针对「回调期/事后渲染」，不针对包内模板字面挂载行；
-    #       下方 else 分支只是兼容旧锚点的容错路径，并非常态。
-    #       不删除本函数/字段：它与 install/config/upgrade 三个回调及 SCAN_DIRS_FILE 持久化
-    #       共用，且默认 RO_SCAN_ROOTS 仍被 server 消费（me.ts）；强删有安装/升级断链风险。
-    #       用户-facing 误导由 wizard/install、wizard/config 的 helpText 标注消除。
-    compose_file_ok || return 0
-    local raw="" dir i=0
-    local roots="/app/data/downloads"
+    # ⚠️ 名称沿用历史：#129/Track A 起本函数**不再渲染任何挂载**，只把向导输入留档。
+    #
+    # 历史职责（v0.2.1~v0.2.15）：把 wizard_scan_dirs 渲染成 compose 的
+    # 「- <宿主目录>:/app/data/scan/N」挂载行，并按行前缀整行替换 RO_SCAN_ROOTS；
+    # 幂等（先删历史渲染行再按锚点重建），目录不存在仅告警跳过。
+    # 该职责对 Docker 形态 fpk **恒不生效**：真机取证（docs/FNOS-DEPLOY.md
+    # 「#88 实测发现」第 2 条）证实渲染本身成功、@appcenter 落盘 compose 里确有渲染行
+    # （RO_SCAN_ROOTS 含 /app/data/scan/1、挂载行在位），但 fnOS 的 compose up 采用
+    # 安装时保存的包内模板、不读被回调改过的落盘文件 → 运行容器内 RO_SCAN_ROOTS 仍为
+    # 模板值、/app/data/scan 目录不存在（架构级遗留 #88）。旧注曾把真因写成「fnOS 丢弃
+    # 锚点、故走 else 分支」，该说法系误诊，已按 #126 评审订正为上述实证表述。
+    #
+    # #129/Track A 处置（依 t128 调研第 3 节方案 b：改动面最小、不断链、保留用户输入痕迹）：
+    #   - 挂载职责整体废弃：用户自有目录进容器的唯一原生通道是 data-share 固定共享，已由
+    #     包内 compose 字面行声明（下载 rainbow-music → /app/data/downloads；导入
+    #     rainbow-library → /app/data/library），RO_SCAN_ROOTS 亦字面直写双根；
+    #   - 本函数降级为「仅把向导原始输入持久化到 ${SCAN_DIRS_FILE}」，供诊断留档与将来
+    #     Track B（native_app 宿主直读）复用，不再触碰 compose 一个字节；
+    #   - 留档前按 t128 第 4.3 节做同源过滤：realpath 等于下载共享 realpath、或位于其内的
+    #     条目直接跳过——这类路径与下载根同源，留档会误导后续消费并诱发曲库翻倍（M3）。
+    #
+    # 空参语义（沿用 v0.2.4 结论）：fnOS 升级链会带空 wizard 参数重跑回调，故空参直接返回、
+    # **不回写也不清空**既有留档，避免误删用户曾填内容。
+    # 契约不变：恒 return 0，绝不 exit 1（防应用起不来）；set -eu 安全。
+    local raw="" dir real kept="" written=0 skipped=0
+    local dl_share="/var/apps/${APP_NAME}/shares/rainbow-music"
+    local dl_real
     if [ "$#" -ge 1 ] && [ -n "$1" ]; then
         raw="$1"
-        if [ -n "${TRIM_PKGETC:-}" ]; then
-            printf '%s\n' "$raw" > "$SCAN_DIRS_FILE" 2>/dev/null || true
-        fi
-    elif [ -f "$SCAN_DIRS_FILE" ]; then
-        raw=$(sed -n '1p' "$SCAN_DIRS_FILE" 2>/dev/null || true)
     fi
-    local vol_tmp="${COMPOSE_FILE}.scanvols.tmp"
-    : > "$vol_tmp"
+    [ -n "$raw" ] || return 0
+    # 下载共享的真实路径：同源过滤的比对基准。软链缺失时（例：升级未创建共享，R1）取不到值，
+    # 此时跳过过滤、全部留档——fail-safe，绝不因诊断能力缺失而丢弃用户输入
+    dl_real=$(readlink -f "$dl_share" 2>/dev/null || true)
     while IFS= read -r dir || [ -n "$dir" ]; do
         [ -n "$dir" ] || continue
-        if [ -d "$dir" ]; then
-            i=$((i+1))
-            printf '      - %s:/app/data/scan/%s\n' "$dir" "$i" >> "$vol_tmp"
-            roots="${roots}:/app/data/scan/${i}"
-        else
-            log_info "音乐库扫描目录不存在，跳过：${dir}"
+        # readlink -f 规范化（解析软链、消解 . 与 ..）；失败则原样保留
+        real=$(readlink -f "$dir" 2>/dev/null || printf '%s' "$dir")
+        if [ -n "$dl_real" ]; then
+            case "$real" in
+                "$dl_real"|"$dl_real"/*)
+                    log_info "扫描目录留档跳过（与下载共享同源，避免重复索引）：${dir} → ${real}"
+                    skipped=$((skipped+1))
+                    continue
+                    ;;
+            esac
         fi
+        kept="${kept}${kept:+,}${dir}"
+        written=$((written+1))
     done < <(parse_scan_dirs "$raw")
-    # 幂等重建：先删历史挂载行（仅 volumes 段的 - xxx:/app/data/scan/N 形态，
-    # 不会误伤 RO_SCAN_ROOTS 值行），再在锚点注释行后插入当前挂载集；
-    # 兼容 v0.2.1 旧锚点（模板中仍存在时同样可匹配），锚点不存在时跳过插入不报错
-    sed -i.bak '/^[[:space:]]*- .*:\/app\/data\/scan\/[0-9][0-9]*$/d' "$COMPOSE_FILE"
-    rm -f "${COMPOSE_FILE}.bak"
-    if [ -s "$vol_tmp" ]; then
-        if grep -q 'rainbow-scan-volumes-anchor' "$COMPOSE_FILE" 2>/dev/null; then
-            sed -i.bak "/rainbow-scan-volumes-anchor/r ${vol_tmp}" "$COMPOSE_FILE"
-            rm -f "${COMPOSE_FILE}.bak"
-        elif grep -q '__WIZ_SCAN_VOLUMES__' "$COMPOSE_FILE" 2>/dev/null; then
-            sed -i.bak "/__WIZ_SCAN_VOLUMES__/r ${vol_tmp}" "$COMPOSE_FILE"
-            rm -f "${COMPOSE_FILE}.bak"
-        else
-            log_info "compose 锚点不存在，跳过扫描目录挂载插入：${vol_tmp} 行"
-        fi
+    if [ "$written" -gt 0 ] && [ -n "${TRIM_PKGETC:-}" ]; then
+        printf '%s\n' "$kept" > "$SCAN_DIRS_FILE" 2>/dev/null || true
     fi
-    rm -f "$vol_tmp"
-    sed -i.bak "s|^\([[:space:]]*\)RO_SCAN_ROOTS:.*|\1RO_SCAN_ROOTS: \"${roots}\"|" "$COMPOSE_FILE" || true
-    rm -f "${COMPOSE_FILE}.bak"
-    log_info "音乐库扫描根渲染完成：RO_SCAN_ROOTS=${roots}（额外挂载 ${i} 个目录）"
+    log_info "音乐库扫描目录输入已留档（#129 起不再渲染挂载）：写入 ${written} 条、同源跳过 ${skipped} 条；导入本地音乐请放入飞牛共享 rainbow-library"
+    return 0
 }
 
 ensure_data_dirs() {
@@ -339,29 +323,37 @@ ensure_data_dirs() {
 # ---------- data-share 软链只读诊断（v0.2.15） ----------
 
 check_data_share_link() {
-    # 下载挂载源 /var/apps/${APP_NAME}/shares/rainbow-music 是 fnOS 为 data-share
-    # 「rainbow-music」维护的卷号无关软链（→ @appshare/rainbow-music）。本函数只读
-    # 诊断该路径状态并写日志，供安装/升级后取证；恒 return 0（fail-safe，不阻断回调）。
-    # 绝不创建/修复/删除/移动/替换该路径——回调以应用用户（uid 975）执行，改不动
-    # root 管理的软链，任何写操作都可能误伤真实目录。TRIM_DATA_SHARE_PATHS 在生命周期
-    # 脚本中可用（":" 分隔的 data-share 宿主路径），仅用于对照记录，不参与任何写操作。
-    local link="/var/apps/${APP_NAME}/shares/rainbow-music"
-    local target="" state=""
-    if [ -L "$link" ]; then
-        target=$(readlink "$link" 2>/dev/null || true)
-        if [ -n "$target" ] && [ -d "$link" ]; then
-            state="ok（软链有效 → ${target}）"
+    # data-share 软链只读诊断：fnOS 为 config/resource 声明的每个共享维护
+    # /var/apps/${APP_NAME}/shares/<name> 卷号无关软链（→ @appshare/<name>），包内 compose
+    # 的字面挂载行即以该稳定路径为源。#129/Track A：共享由 1 个（下载 rainbow-music）增至
+    # 2 个（+ 音乐库导入 rainbow-library），逐个诊断状态并写日志，供安装/升级后取证——
+    # 尤其 R1（升级路径是否自动创建新增共享）只能靠这里的日志判定。
+    # 契约不变：恒 return 0（fail-safe，不阻断回调）；绝不创建/修复/删除/移动/替换任何路径
+    # ——回调以应用用户（uid 975）执行，改不动 root 管理的软链，任何写操作都可能误伤真实
+    # 目录。TRIM_DATA_SHARE_PATHS 在生命周期脚本中可用（":" 分隔的 data-share 宿主路径），
+    # 仅用于对照记录，不参与任何写操作。
+    local name link target state
+    for name in rainbow-music rainbow-library; do
+        link="/var/apps/${APP_NAME}/shares/${name}"
+        target=""
+        state=""
+        if [ -L "$link" ]; then
+            target=$(readlink "$link" 2>/dev/null || true)
+            if [ -n "$target" ] && [ -d "$link" ]; then
+                state="ok（软链有效 → ${target}）"
+            else
+                state="broken（软链悬空 → ${target:-空}）"
+            fi
+        elif [ -d "$link" ]; then
+            state="realdir（该路径是真实目录而非软链，需人工核查，本函数不改动）"
+        elif [ -e "$link" ]; then
+            state="unexpected（该路径存在但既非软链也非目录）"
         else
-            state="broken（软链悬空 → ${target:-空}）"
+            state="missing（软链不存在）"
         fi
-    elif [ -d "$link" ]; then
-        state="realdir（该路径是真实目录而非软链，需人工核查，本函数不改动）"
-    elif [ -e "$link" ]; then
-        state="unexpected（该路径存在但既非软链也非目录）"
-    else
-        state="missing（软链不存在）"
-    fi
-    log_info "data-share 软链诊断：${link} → ${state}；TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-未注入}"
+        log_info "data-share 软链诊断：${link} → ${state}"
+    done
+    log_info "data-share 声明对照：TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-未注入}"
     return 0
 }
 

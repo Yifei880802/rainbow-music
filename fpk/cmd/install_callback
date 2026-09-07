@@ -6,8 +6,10 @@
 #   - 密码为空 -> 写 $TRIM_TEMP_LOGFILE 后失败退出
 #   - 密码/目录经 yaml_dquote_escape + sed RHS 双重转义，双引号标量注入
 #   - 幂等：config.yaml 已存在则不覆盖
-#   - v0.2.1：渲染音乐库扫描目录挂载与 RO_SCAN_ROOTS（目录不存在仅告警跳过，
-#     不阻断安装），并把向导选择持久化到 ${TRIM_PKGETC}/scan-dirs.conf 供升级恢复
+#   - v0.2.1 引入、#129/Track A 降级：向导的音乐库扫描目录输入仅持久化留档到
+#     ${TRIM_PKGETC}/scan-dirs.conf（不再渲染 compose 挂载与 RO_SCAN_ROOTS——回调期
+#     渲染对 Docker 形态 fpk 恒不生效，见 _common.render_scan_mounts 与 #88）；本地音乐
+#     改由固定导入共享 rainbow-library 提供（包内 compose 字面挂载行 + 字面双根 env）
 
 set -eu
 
@@ -21,8 +23,11 @@ render_config "${wizard_password:-}" "${wizard_port:-}" ""
 # 需单独收敛——fnOS 手动升级链会带空向导参数重跑本回调，正是收敛老配置的入口。
 # 恒 return 0，set -eu 安全
 normalize_download_dir
+# #129/Track A：降级为只留档（不触碰 compose 一个字节），恒 return 0；
+# 空参直接返回，不清空旧留档；与下载共享同源的条目留档前自动跳过（M3 防翻倍）
 render_scan_mounts "${wizard_scan_dirs:-}"
-# v0.2.15：data-share 软链只读诊断（下载挂载源），恒 return 0 不阻断安装
+# v0.2.15：data-share 软链只读诊断（挂载源），恒 return 0 不阻断安装；
+# #129 扩展为下载共享 rainbow-music + 导入共享 rainbow-library 两个软链逐个诊断
 check_data_share_link
 ensure_data_dirs
 # v0.2.12：安装时刻 marker，供运行时网关注册诊断区分「刚安装等 sacentry

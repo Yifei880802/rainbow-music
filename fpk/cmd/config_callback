@@ -6,7 +6,9 @@
 #   - 密码走 yaml_dquote_escape + sed RHS 双重转义（与 install_callback 一致）
 #   - v0.2.15：移除下载目录字段——download.dir 恒为容器内相对路径 data/downloads
 #     （下载目录已固定挂载 data-share rainbow-music，见 compose），配置页不再可改
-#   - v0.2.1：扫描目录非空时重渲染 compose 挂载与 RO_SCAN_ROOTS（留空=保持不变）
+#   - v0.2.1 引入、#129/Track A 降级：扫描目录字段非空时仅留档（不再重渲染 compose
+#     挂载与 RO_SCAN_ROOTS；回调期渲染对 Docker 形态 fpk 恒不生效，见 #88），也不再
+#     因它重启容器；留空=保留旧留档不变。本地音乐导入改走共享目录 rainbow-library
 #   - 有变更则重启容器生效；末尾幂等补齐数据目录
 
 set -eu
@@ -38,10 +40,10 @@ fi
 # v0.2.15：移除下载目录改写分支——download.dir 恒为相对 data/downloads，下载目录
 # 固定挂载 data-share rainbow-music（见 compose），不再接受向导绝对路径覆盖
 if [ -n "${wizard_scan_dirs:-}" ]; then
-    # v0.2.1：填了新扫描目录才重渲染（留空=保持当前挂载不变）；填入的新值
-    # 替换全部旧目录（不存在目录仅告警跳过），并同步更新持久化记录
+    # #129/Track A：仅留档（render_scan_mounts 已降级，不再渲染挂载与 RO_SCAN_ROOTS，
+    # 也不再回读旧值）。刻意不置 changed=1：留档不产生任何运行时变化，为它重启容器
+    # 只会白白打断在途下载与 SSE 长连接；密码/端口等真实变更仍由各自分支置位并重启
     render_scan_mounts "$wizard_scan_dirs"
-    changed=1
 fi
 if [ "$changed" = "1" ] && compose_file_ok; then
     # 配置变更需要重启容器生效

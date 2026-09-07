@@ -330,6 +330,85 @@ stage_fpk() {
     fi
     log "${C_GREEN}${C_BOLD}DDIR_CONVERGE_PASS${C_NC}：安装/升级回调均收敛遗留 download.dir（改前备份、限定 download 块）"
 
+    # ── #129/Track A 包级断言：音乐库导入共享必须与下载共享平级、互不嵌套 ──
+    # 红线（t128 调研 R5）：导入共享名一旦写成嵌套形态（如 rainbow-music/library），其宿主
+    # 路径就落在下载共享内部，会被 /app/data/downloads 与 /app/data/library 各扫一遍 →
+    # 曲库立即翻倍（M3）。本段把「评审须卡死此点」机械化，防将来改包时无意破坏。
+    local lib_share="rainbow-library" dl_share_name="rainbow-music"
+    local lib_src="/var/apps/com.rainbow.music/shares/rainbow-library"
+    local dst_dl="/app/data/downloads" dst_lib="/app/data/library"
+    local resource_f lib_re lib_count lib_line lib_src_actual ro_line ro_val
+    resource_f="$(find "$TMP_EXTRACT" -type f -path '*config/resource' | head -n1)"
+    if [[ -z "$resource_f" ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：解包产物中找不到 config/resource"
+        return 1
+    fi
+
+    # 1) resource 必须声明导入共享（复用 v0.2.15 已验证的 data-share 机制，与 0dd5ed2 同法）
+    if ! grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${lib_share}\"" "$resource_f"; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：config/resource 未声明 data-share ${lib_share}"
+        return 1
+    fi
+    if ! grep -Eq "\"name\"[[:space:]]*:[[:space:]]*\"${dl_share_name}\"" "$resource_f"; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：config/resource 丢失下载 data-share ${dl_share_name}"
+        return 1
+    fi
+
+    # 2) 共享名不得含 '/'（嵌套共享的机械特征），且两名互不为前缀
+    if grep -Eq '"name"[[:space:]]*:[[:space:]]*"[^"]*/' "$resource_f"; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：config/resource 存在含 '/' 的嵌套共享名（会触发 M3 曲库翻倍）"
+        return 1
+    fi
+    if [[ "$lib_share" == "${dl_share_name}"* || "$dl_share_name" == "${lib_share}"* ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：共享名 ${dl_share_name} 与 ${lib_share} 互为前缀（嵌套风险，会触发 M3 曲库翻倍）"
+        return 1
+    fi
+
+    # 3) compose 必须字面挂载导入共享且恰好 1 条（回调渲染的行不被 fnOS 采用，见 #88）
+    lib_re='^[[:space:]]*-[[:space:]]+[^:]+:/app/data/library[[:space:]]*$'
+    lib_count="$(grep -Ec "$lib_re" "$compose" || true)"
+    if [[ "$lib_count" -ne 1 ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：映射到 /app/data/library 的 volume 行应恰好 1 条，实际 ${lib_count} 条"
+        return 1
+    fi
+    lib_line="$(grep -E "$lib_re" "$compose" | head -n1)"
+    lib_src_actual="$(printf '%s\n' "$lib_line" | sed -E 's/^[[:space:]]*-[[:space:]]+//; s#:/app/data/library[[:space:]]*$##')"
+    if [[ "$lib_src_actual" != "$lib_src" ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：导入目录挂载源='${lib_src_actual}'，预期 '${lib_src}'（必须用卷号无关的 data-share 软链）"
+        return 1
+    fi
+
+    # 4) 容器内两个挂载点也必须互不嵌套、互不重合（宿主侧同源性由第 2 条共享名断言保证）
+    if [[ "$dst_lib" == "$dst_dl" || "$dst_lib" == "${dst_dl}"/* || "$dst_dl" == "${dst_lib}"/* ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：容器内挂载点嵌套/重合（${dst_dl} vs ${dst_lib}），会触发 M3 曲库翻倍"
+        return 1
+    fi
+
+    # 5) RO_SCAN_ROOTS 必须是模板字面值且含双根；不得残留旧的回调渲染目录 /app/data/scan
+    ro_line="$(grep -E '^[[:space:]]*RO_SCAN_ROOTS:' "$compose" | head -n1)"
+    if [[ -z "$ro_line" ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：compose 未字面声明 RO_SCAN_ROOTS（回调渲染不被 fnOS 采用，必须写在模板里）"
+        return 1
+    fi
+    ro_val="$(printf '%s\n' "$ro_line" | sed -E 's/^[[:space:]]*RO_SCAN_ROOTS:[[:space:]]*//; s/[[:space:]]+$//' | tr -d '"' | tr -d "'")"
+    if [[ ":${ro_val}:" != *":${dst_dl}:"* ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：RO_SCAN_ROOTS='${ro_val}' 缺少下载根 ${dst_dl}"
+        return 1
+    fi
+    if [[ ":${ro_val}:" != *":${dst_lib}:"* ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：RO_SCAN_ROOTS='${ro_val}' 缺少导入根 ${dst_lib}"
+        return 1
+    fi
+    if [[ "$ro_val" == *"/app/data/scan"* ]]; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：RO_SCAN_ROOTS='${ro_val}' 残留已废弃的回调渲染目录 /app/data/scan"
+        return 1
+    fi
+    if grep -Fq 'rainbow-scan-volumes-anchor' "$compose"; then
+        log "${C_RED}${C_BOLD}LIBRARY_SHARE_FAIL${C_NC}：compose 残留已废弃的 rainbow-scan-volumes-anchor 锚点"
+        return 1
+    fi
+    log "${C_GREEN}${C_BOLD}LIBRARY_SHARE_PASS${C_NC}：导入共享 ${lib_share} 已声明并字面挂载（${lib_src} → ${dst_lib}），与下载共享 ${dl_share_name} 平级不嵌套，RO_SCAN_ROOTS='${ro_val}'"
+
     return 0
 }
 

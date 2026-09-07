@@ -29,11 +29,15 @@ services:
       # chown socket 属主（网关以应用身份连接 socket）。缺省为空则服务端跳过 chown（fail-safe）
       TRIM_RUN_UID: "${TRIM_RUN_UID}"
       TRIM_RUN_GID: "${TRIM_RUN_GID}"
-      # 本地音乐库扫描根（":" 分隔）：默认含共享下载目录，向导配置的扫描目录由生命周期脚本
-      # 渲染追加为 /app/data/scan/1、/app/data/scan/2 ...（渲染函数按行前缀整行替换本行）。
+      # 本地音乐库扫描根（":" 分隔的容器内路径）。#129/Track A：改为字面直写双根——
+      # 下载共享目录 + 音乐库导入共享目录，两者都是包内模板声明的 data-share 固定挂载，
+      # 随模板被 fnOS 保存后生效。向导填写的任意 NAS 路径不再参与本变量：fnOS 只采用
+      # 安装时保存的包内模板，回调期渲染的 env/挂载行不被容器采用（架构级限制 #88，
+      # 见 docs/FNOS-DEPLOY.md），故 Track A 不再做回调渲染，改由用户把音乐放进导入共享。
+      # 两个根物理不同源、互不嵌套（独立顶层共享名），不会重复索引；服务端 scanner
+      # 另有根级 realpath + dev/ino 同源去重与嵌套剪枝作为兜底（M3）。
       # v0.2.2：不再使用 __XXX__ 形式占位符——fnOS 升级流程会移除该命名空间的内容
-      # （含 env 行与注释锚点），改用默认值直写，向导有值时仍由 sed 整行替换
-      RO_SCAN_ROOTS: "/app/data/downloads"
+      RO_SCAN_ROOTS: "/app/data/downloads:/app/data/library"
     volumes:
       # 配置文件：由 install_callback 从安装向导渲染，落在飞牛托管的 etc 目录
       - ${TRIM_PKGETC}/config.yaml:/app/config.yaml
@@ -45,6 +49,15 @@ services:
       # 本行必须留在包内 compose 模板——fnOS 从内部保存的模板运行，回调期动态渲染的
       # 挂载行不会被采用（见 docs/FNOS-DEPLOY.md）。
       - /var/apps/com.rainbow.music/shares/rainbow-music:/app/data/downloads
+      # 音乐库导入目录（#129/Track A）：与下载共享同款的 data-share 固定共享，用户在飞牛
+      # 文件管理器里把要导入的音乐放进 rainbow-library 共享，容器内即 /app/data/library 可见，
+      # 前端「NAS 音乐」页勾选后即可扫描入库。这是 Docker 形态 fpk 让用户自有目录进容器的
+      # 唯一原生通道（官方 resource/data-share 语义，与 0dd5ed2 下载目录改造同源同法）。
+      # 命名红线：必须是与 rainbow-music 平级的独立顶层共享名，绝不能写成
+      # rainbow-music/library 这类嵌套名——嵌套共享在宿主位于下载共享内部，会被
+      # /app/data/downloads 与 /app/data/library 各扫一遍导致曲库翻倍（M3）。
+      # 同下载挂载：源用卷号无关的稳定软链，本行必须留在包内模板（回调期渲染不生效）。
+      - /var/apps/com.rainbow.music/shares/rainbow-library:/app/data/library
       # 音源脚本目录（lx-music .js 音源）
       - ${TRIM_PKGVAR}/data/sources:/app/data/sources
       # SQLite 数据库目录（任务记录/歌单），升级不丢数据
@@ -52,8 +65,6 @@ services:
       # 统一网关 socket 目录：fnOS 将宿主机 ${TRIM_APPDEST} 挂进容器，网关转发
       # /app/com.rainbow.music -> 该目录下的 app.sock（ui/config 的 gatewaySocket 与之对应）
       - ${TRIM_APPDEST}:/app/target
-      # rainbow-scan-volumes-anchor 音乐库扫描目录挂载锚点：渲染时在本行后插入
-      # - <宿主机目录>:/app/data/scan/N（幂等重建；v0.2.2 起锚点不用 __XXX__ 形式，避免被 fnOS 移除）
     # 内存上限保护：与 config.yaml 的 download.memLimitMB 联动，阈值应设为本上限的 ~83%（512m → 400）；
     # 若收紧本上限（如 384m/256m），需同步下调 memLimitMB（320/200），否则内核 OOM kill 会先于护栏生效
     mem_limit: 512m
