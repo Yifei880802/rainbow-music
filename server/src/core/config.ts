@@ -280,6 +280,32 @@ export function loadConfig(): RoConfig {
   return cfg
 }
 
+/**
+ * 落盘当前运行态配置。#135 回写审计已核实下列三项行为，结论是「可接受、不改实现」，
+ * 故此处只做文档化，并以 `test/config.merge.test.ts`（s7 / s8 / s10）把现状钉为回归：
+ *
+ * 1. **整文件重写，不保留注释与原有排版**：`YAML.stringify` 会丢掉全部注释，并按自身
+ *    风格重新决定缩进、引号与键序。这是本函数自引入起就有的既有行为——#127 加深合并
+ *    前后本函数逐字节相同（已比对 `git show d26c63a^:server/src/core/config.ts` 与
+ *    `git show d26c63a:server/src/core/config.ts` 的本函数段，diff 空输出），故按「记录但
+ *    不扩大改动」处置：改成原地编辑以保留注释需要 YAML CST 级别的改写，风险远大于收益。
+ *    实际后果是 `ensureConfigFile()` 写的两行文件头注释、以及用户
+ *    自己加的注释，都会在首次 PATCH 后消失；密码等**值**不受影响（见第 3 条）。
+ * 2. **回写范围是整个 config 对象，而非「用户本次改过的字段」**。#127 起 config 恒为深合并
+ *    后的全量对象，故首次 PATCH 会把用户从未写过的字段固化为显式默认值（实测：只写了
+ *    3 个顶层块的精简配置，PATCH 一次后 8 个块全部在位）。代价是将来调整
+ *    `buildDefaultConfig` 的默认值，对已经 PATCH 过的用户不再生效。真机 fpk 路径零影响：
+ *    `fpk/cmd/_common` 的 `render_config()` 渲染出的 config.yaml 本就显式写全全部顶层块，
+ *    且值与 `buildDefaultConfig` 逐项相同，固化不改变任何语义（对照用例 s10）。
+ *    另注：`applyEnvOverrides` 生效过的字段（如 RO_LOG_LEVEL）同样会被固化成 yaml 里的
+ *    显式值。真机 compose 只设了 RO_SERVER_HOST / RO_SERVER_PORT，而模板已写同值，故无危害。
+ * 3. **password 恒为用户实设值或空串，绝不会被写入随机强密码**：随机值只在
+ *    `ensureConfigFile()`（配置文件本就不存在）那条路径产生；配置文件已存在时默认值取
+ *    `buildDefaultConfig('')`，本函数回写的就是文件里已有的那个值（理由见该函数注释与
+ *    `mergeWithDefaults` 的「凭据例外」）。
+ *
+ * 路径字段：仅对「原本写作相对路径」的做相对化；绝对路径原样落盘，不强制相对化。
+ */
 export function saveConfig(cfg: RoConfig): void {
   // 仅对「原本写作相对路径」的字段做相对化；绝对路径原样落盘，不强制相对化
   const out = JSON.parse(JSON.stringify(cfg)) as RoConfig
@@ -302,6 +328,10 @@ export const STARTUP_DOWNLOAD_DIR: string = config.download.dir
 /**
  * 运行时局部更新配置（设置页用）。深合并 patch → 保存到 yaml → 原地更新 config 对象。
  * 注意：server/auth 等需重启才生效的字段，这里只落盘，运行态不强制刷新。
+ *
+ * 本函数唯一的落盘出口是 `saveConfig()`，故回写语义（固化范围、注释不保留、password
+ * 恒不注入随机值）全部见该函数的注释。#135 的审计结论是行为可接受、不做侵入式改造，
+ * 改以注释与回归用例钉住现状；取证用例见 `test/config.merge.test.ts` 的 s7 / s8 / s9 / s10。
  */
 export function patchConfig(patch: DeepPartial<RoConfig>): RoConfig {
   // #73 下载目录被显式修改：按用户本次输入的写法更新回写标记——
