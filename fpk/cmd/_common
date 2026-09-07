@@ -260,6 +260,14 @@ render_scan_mounts() {
     # v0.2.4：fnOS 升级流程会带空 wizard 参数重跑 install_callback（真机实测：升级后
     #       scan-dirs.conf 被空参调用清空，mtim 与升级时刻一致）——空参不再覆盖持久化，
     #       只有向导有非空值才写入；全新安装空值与升级重跑空参都回落回读/默认，行为安全
+    # ⚠️ 当前实效（审查 t122 m4 实证， wizard_scan_dirs 字段保留但标注不生效）：
+    #       本函数向「回调期渲染的 compose」插入额外扫描挂载与 RO_SCAN_ROOTS，但 fnOS
+    #       从自存模板运行容器、且该模板的锚点（rainbow-scan-volumes-anchor / __WIZ_SCAN_VOLUMES__）
+    #       常被剥离（即下方 else 分支）→ 向导填的「额外扫描目录」经 .fpk 安装实际不生效；
+    #       仅 compose 模板自带的默认 RO_SCAN_ROOTS="/app/data/downloads"（下载目录）恒生效。
+    #       不删除本函数/字段：它与 install/config/upgrade 三个回调及 SCAN_DIRS_FILE 持久化
+    #       共用，且默认 RO_SCAN_ROOTS 仍被 server 消费（me.ts）；强删有安装/升级断链风险。
+    #       用户-facing 误导由 wizard/install、wizard/config 的 helpText 标注消除。
     compose_file_ok || return 0
     local raw="" dir i=0
     local roots="/app/data/downloads"
@@ -355,13 +363,19 @@ rb_psql_err=""
 
 rb_psql() {
     # $1=库名 $2=SQL；stdout=psql 输出（-Atc），失败输出空、原因写入全局 rb_psql_err。
-    # v0.2.11：回调执行身份是应用专用系统用户（uid 975，非 root），宿主直跑 psql
-    # 被 pg peer 认证拒绝（pg_hba local peer + pg_ident trim_root 仅映射 root）
-    # ——v0.2.10 真机实证 watcher 20 轮 UPDATE 全部被静默吞掉。改经 docker 容器
-    # （默认 uid 0）执行宿主 psql：容器进程经共享 unix socket 的 peer 凭据为
-    # root，trim_root 放行（真机探针 20 余次 100% 成功的配方）。
-    # 依赖：docker CLI（回调可用，与 compose_up 同通道）、宿主 loader/psql、
-    # compose 落盘文件的 image: 行（用 rainbow 自身镜像，与宿主 lib 兼容已实证）。
+    # 通道原理：宿主直跑 psql 被 pg peer 认证拒绝（pg_hba local peer + pg_ident
+    # trim_root 仅映射 root），故改经 docker 容器（默认 uid 0）执行宿主 psql：
+    # 容器进程经共享 unix socket 的 peer 凭据为 root，trim_root 放行。
+    # ⚠️ 适用边界（t114/t117 真机实证，勿再误判为「回调内 100% 成功」）：
+    #   该 docker 通道仅在 root 语境有效——手动 root 探针 20 余次成功即此语境。
+    #   生命周期回调以应用专用用户 uid 975 执行，对 /var/run/docker.sock 无权限
+    #   （EACCES）→ docker CLI 在回调内不可用 → rb_psql 实际失败（t114：回调内
+    #   20 轮 UPDATE 全部失败；详见 docs/FNOS-DEPLOY.md v0.2.11~v0.2.14 段）。
+    #   故网关 socket 补写在真机靠 heal 手修配方（root 语境）+ 诊断横幅兜底，
+    #   而非回调内自动补写。本函数本体保留供 heal 配方（root 语境）复用，勿删。
+    # 依赖：docker CLI、宿主 loader/psql、compose 落盘文件的 image: 行
+    # （用 rainbow 自身镜像，与宿主 lib 兼容已实证）；回调 uid 975 下 docker CLI
+    # 因 docker.sock EACCES 不可用（见上「适用边界」）。
     local db="$1" sql="$2" img errf
     local loader=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
     local psqlbin=/usr/lib/postgresql/15/bin/psql
