@@ -39,7 +39,10 @@ function safeView() {
   return {
     auth: {
       // 只回传是否已设置 API Key，绝不回传明文（明文仅在生成的那一次响应里出现）
-      apiKeySet: !!config.auth.apiKey,
+      // ?. 兜底（评审 #126 M2）：loadConfig 从不访问 cfg.auth（仅 RO_AUTH_APIKEY 存在时
+      // 才在 applyEnvOverrides 里触碰，而 fpk compose 未设置该变量），故旧 config 缺顶层
+      // auth: 块时进程可正常启动，但此处裸访问会抛 TypeError → GET /settings 500。
+      apiKeySet: !!config.auth?.apiKey,
     },
     download: {
       concurrency: config.download.concurrency,
@@ -62,12 +65,19 @@ function safeView() {
       // 防御性可选链 + 空值兜底（默认值取自 config.ts buildDefaultConfig）：
       // loadConfig 只做 YAML.parse as RoConfig、不与默认值合并，旧 config.yaml 或手动
       // 精简过、缺 smokeTest / smokeTest.alert 子树时，直接链式访问会抛 TypeError → 500。
-      // 与上方 scrape 的 ?. 风格对齐；config 完整时取值不变，仅缺失时回落默认（审查 t122 M2）。
-      enabled: config.smokeTest?.enabled ?? true,
+      // 与上方 scrape 的 ?. 风格对齐（审查 t122 M2）。
+      // 布尔字段用 === true 而非 ?? true（评审 #126 M1）：运行时消费方是 truthiness 判定
+      // （scheduler.ts `if (!config.smokeTest.enabled) return`、smoke/index.ts `if (...checkLyric)`），
+      // YAML 空值（`enabled:` → null）若用 ?? true 兜底，UI 显示「已勾选」而调度器实际禁用，
+      // 且前端全量 PATCH 会把伪造的 true 落盘、静默开启每日 06:00 冒烟任务。=== true 使
+      // null / 缺失一律回落 false，与消费方语义严格一致（alert.bark/serverChan.enabled 用
+      // ?? false 已等价于 === true，对 null 同样回落 false，故不动）。
+      // 字符串/数值字段保留 ?? 兜底：消费方用 || 同款默认值（scheduler.ts `cron || '0 6 * * *'`），已核实一致。
+      enabled: config.smokeTest?.enabled === true,
       cron: config.smokeTest?.cron ?? '0 6 * * *',
       keyword: config.smokeTest?.keyword ?? '周杰伦',
-      checkLyric: config.smokeTest?.checkLyric ?? true,
-      checkPic: config.smokeTest?.checkPic ?? true,
+      checkLyric: config.smokeTest?.checkLyric === true,
+      checkPic: config.smokeTest?.checkPic === true,
       alertThreshold: config.smokeTest?.alertThreshold ?? 2,
       alert: {
         bark: {

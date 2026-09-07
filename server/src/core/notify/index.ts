@@ -16,8 +16,12 @@ export interface NotifyChannelResult {
 }
 
 async function pushBark(title: string, body: string): Promise<NotifyChannelResult> {
-  const bark = config.smokeTest.alert.bark
-  if (!bark.enabled) return { channel: 'bark', ok: false, skipped: true }
+  // 可选链兜底（评审 #126 M3）：settings.ts 修复后 GET /api/v1/settings 恢复 200，设置页
+  // 「测试告警推送」按钮变为可达；若现场 config.yaml 缺 smokeTest.alert 子树（旧配置或
+  // 手动精简过），此处裸访问会抛 TypeError → POST /settings/notify/test 500（新可达崩溃面）。
+  // 子树缺失等价于「该渠道未启用」→ skipped，与 bark.enabled=false 时语义一致，不改业务逻辑。
+  const bark = config.smokeTest?.alert?.bark
+  if (!bark || !bark.enabled) return { channel: 'bark', ok: false, skipped: true }
   if (!bark.deviceKey) return { channel: 'bark', ok: false, error: 'deviceKey 未配置' }
   try {
     const base = (bark.serverUrl || 'https://api.day.app').replace(/\/$/, '')
@@ -32,8 +36,9 @@ async function pushBark(title: string, body: string): Promise<NotifyChannelResul
 }
 
 async function pushServerChan(title: string, body: string): Promise<NotifyChannelResult> {
-  const sc = config.smokeTest.alert.serverChan
-  if (!sc.enabled) return { channel: 'serverChan', ok: false, skipped: true }
+  // 同 pushBark：?. 兜底防 config 缺 smokeTest.alert.serverChan 子树时抛 TypeError（评审 #126 M3）。
+  const sc = config.smokeTest?.alert?.serverChan
+  if (!sc || !sc.enabled) return { channel: 'serverChan', ok: false, skipped: true }
   if (!sc.sendKey) return { channel: 'serverChan', ok: false, error: 'sendKey 未配置' }
   try {
     const url = `https://sctapi.ftqq.com/${sc.sendKey}.send`
