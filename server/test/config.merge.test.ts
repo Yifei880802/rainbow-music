@@ -542,7 +542,9 @@ test('s7 用户显式值不被改写：port / smokeTest.enabled / 相对路径�
 test('s7 注释取证：saveConfig 会抹掉 YAML 注释并按自身风格重排版（既有行为，非 #127 引入）', () => {
   const out = must('s7')
   assert.ok((out.yamlBefore as string).includes('#'), '前提：PATCH 前的 yaml 确实含注释')
-  assert.ok(!(out.yamlAfter as string).includes('#'), '落盘后注释仍在——与 saveConfig 的 YAML.stringify 实现不符')
+  // 按「无注释行」判定而非「文本不含 #」：# 可能作为合法值字符出现（如随机密码含 #）
+  const commentLinesAfter = (out.yamlAfter as string).split('\n').filter((l) => /^\s*#/.test(l))
+  assert.equal(commentLinesAfter.length, 0, '落盘后仍有注释行——与 saveConfig 的 YAML.stringify 实现不符')
 })
 
 test('s7 password 取证：落盘值恒为空串，绝不固化随机强密码（#127 决策 4 的例外）', () => {
@@ -581,7 +583,10 @@ test('s8 配置文件不存在时自动生成，密码为随机强密码且 isPa
 test('s8 取证：首启生成的文件头注释同样会在首次 PATCH 时被抹掉（既有 strip 行为的具体后果）', () => {
   const out = must('s8')
   assert.ok((out.yamlBefore as string).includes('#'), '前提：首启文件含注释')
-  assert.ok(!(out.yamlAfter as string).includes('#'), '落盘后注释仍在——与 saveConfig 的 YAML.stringify 实现不符')
+  // 按「无注释行」判定而非「文本不含 #」：s8 走 ensureConfigFile 首启路径，
+  // randomStrongPassword 的符号集含 #，密码作为值被 YAML.stringify 输出时文本即含 #
+  const commentLinesAfter = (out.yamlAfter as string).split('\n').filter((l) => /^\s*#/.test(l))
+  assert.equal(commentLinesAfter.length, 0, '落盘后仍有注释行——与 saveConfig 的 YAML.stringify 实现不符')
   // 密码本身不受影响：注释消失不等于凭据丢失
   assert.equal(out.passwordFingerprintAfter, out.passwordFingerprint)
 })
