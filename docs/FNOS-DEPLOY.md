@@ -1,6 +1,6 @@
-# Rainbow fnOS 部署指南（v0.2.15）
+# Rainbow fnOS 部署指南（v0.2.16）
 
-面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
+面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制（v0.2.16 起为 #88 Track A 导入共享）、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
 ---
 
@@ -13,6 +13,7 @@
 - [v0.2.7/v0.2.8 网关 404 第三层根因：数据库 socket 字段为空与 DB 热修](#v027v028-网关-404-第三层根因数据库-socket-字段为空与-db-热修)
 - [2026-08-28 音源清空与下载目录断裂：根因与热修](#2026-08-28-音源清空与下载目录断裂根因与热修)
 - [v0.2.15 下载目录挂载 data-share 与运维迁移](#v0215-下载目录挂载-data-share-与运维迁移)
+- [#88 Track A：rainbow-library 导入共享（v0.2.16）](#88-track-arainbow-library-导入共享v0216)
 - [安装向导：「音乐库扫描目录」配置与挂载机制](#安装向导音乐库扫描目录配置与挂载机制)
 - [X-Trim-* 身份头安全模型](#x-trim--身份头安全模型)
 - [错误码与降级行为](#错误码与降级行为)
@@ -261,6 +262,8 @@ v0.2.15 起 `/app/data/downloads` 就是 data-share 本身。若用户此前把�
 - 将来若修复 #88（让回调渲染的扫描挂载真正生效），必须同时在 `render_scan_mounts` 跳过「解析后与 data-share 同真实路径」的扫描目录，否则重复索引立刻显形；
 - 运维侧：v0.2.15 之后 `scan-dirs.conf` 里的 data-share 条目已**冗余**（下载目录恒在扫描根首位），建议移除，避免 #88 修复后踩坑。
 
+> **后续处置（v0.2.16，#88 Track A + M3）**：本节潜伏态已三重闭环——`render_scan_mounts` 不再渲染任何挂载（回调渲染职责废弃，`SCAN_DIRS_FILE` 只写不读，留档前自动跳过与下载共享同源的路径）；Track A 的第二扫描根来自**独立顶层共享** `rainbow-library`，与下载共享物理不同源、互不嵌套，天然无重叠；服务端另有 `normalizeScanRoots()` 根级 realpath + `dev:ino` 同源去重与嵌套剪枝兜底（M3，`896438f`）。`scan-dirs.conf` 冗余行已在 NAS 侧清空（0 字节留档）。详见下文「#88 Track A」章。
+
 ### 运维手动迁移（copy-only，不自动执行）
 
 v0.2.15 **不自动迁移**旧 `@appdata/com.rainbow.music/data/downloads` 里的历史下载（用户选定策略：旧文件原样保留、不删不改）。旧目录由 `ensure_data_dirs` 继续创建保留。若要把历史下载并入新共享目录，由**运维手动**执行 copy-only（no-clobber）迁移：
@@ -272,11 +275,74 @@ v0.2.15 **不自动迁移**旧 `@appdata/com.rainbow.music/data/downloads` 里�
 
 > 迁移是**可选**的运维动作，v0.2.15 包本身永不触碰旧文件。
 
-## 安装向导：「音乐库扫描目录」配置与挂载机制
+## #88 Track A：rainbow-library 导入共享（v0.2.16）
 
-v0.2.1 安装向导新增**「音乐库扫描目录（可选）」**字段：要导入本地音乐库的 NAS 目录（绝对路径，如 `/vol1/1000/music`），可填多个（英文逗号分隔）。
+v0.2.16 对架构级遗留 **#88**（向导「音乐库扫描目录」经 `.fpk` 路径永不生效，见下文「#88 实测发现」第 2 条）作 **Track A 根治**（`48922ff`，配套服务端 M3 去重 `896438f`）：新增固定的「音乐库导入共享」`rainbow-library`，**废弃回调渲染挂载**。
 
-> ⚠️ **当前版本实效 caveat（#126 评审 M7 补注，与 .fpk 向导 helpText 同口径）**：下述挂载机制描述的是生命周期脚本的**渲染行为**。渲染本身确实成功——真机取证见下文「data-share 与「扫描目录」重叠」章：fnOS 保存的 compose 里确有 `- /vol2/@appshare/rainbow-music:/app/data/scan/1` 挂载行与拼接后的 `RO_SCAN_ROOTS`。但**渲染结果不被容器采用**：fnOS 从安装时保存的内部模板启动容器，回调期渲染的挂载行不被采用（架构级遗留 **#88**，实测发现见本文档「#88 实测发现」第 2 条）。因此经 `.fpk` 安装/升级填写的「音乐库扫描目录」当前**不生效**——运行容器内 `RO_SCAN_ROOTS` 恒为默认 `/app/data/downloads`、`/app/data/scan` 目录不存在，实际仅默认下载目录会被扫描。下文机制说明保留作为 #88 修复后的设计依据；修复前请勿依赖该字段。
+### 机制依据（#128 调研，官方文档 + 真机实证）
+
+- fnOS 的 compose up 只采用「**包内模板字面行 + 封闭的 `${TRIM_*}` 占位集合**」；向导自定义字段与用户授权目录（`TRIM_DATA_ACCESSIBLE_PATHS`）均不在该集合内，无法被替换进包内 compose 成为动态挂载；
+- Docker 形态 fpk 让用户目录进容器的**唯一原生通道 = data-share 固定共享**（`config/resource` 声明 + 包内 compose 字面挂载行，与 v0.2.15 下载目录改造同源同法、真机已验证）；「扫描任意已有目录」的体验只存在于 native_app（宿主 root 直读，如官方 trim.music / trim.photos）；
+- 字面 #88（向导手填任意路径 → 自动挂载）的两条根治路线——Track B 转 native_app、Track C 文件开放 API（当前被 `TRIM_API_TOKEN` 不注入容器阻塞）——均属架构级重写，**独立立项，不入本版**；
+- 故 Track A 把 UX 契约从「扫描目录指向任意已有目录」**变更为「把文件放入固定的 `rainbow-library` 导入共享」**。#88 由此从「架构级缺陷（功能性死代码）」降级为「UX 限制（不能指向任意外部目录）」。
+
+### 包内改动（`48922ff`）
+
+| 文件 | 改动 |
+|---|---|
+| `fpk/config/resource` | `data-share.shares` 新增 `rainbow-library`（`permission.rw:[rainbow]`，与 `rainbow-music` 完全同构）；`docker-project` / `api-scope` 不动 |
+| `fpk/app/docker/docker-compose.yaml` | 增字面挂载行 `/var/apps/com.rainbow.music/shares/rainbow-library:/app/data/library`（源用卷号无关稳定软链，不硬编码 `/volN`）；`RO_SCAN_ROOTS` 改**模板字面双根** `/app/data/downloads:/app/data/library`；删除已无意义的 `rainbow-scan-volumes-anchor` 回调渲染锚点 |
+| `fpk/cmd/_common` | `render_scan_mounts()` 降级为「仅把向导原始输入持久化到 `SCAN_DIRS_FILE`」，不再触碰 compose 一个字节（函数名保留：三个回调与多份历史文档交叉引用，名实不符由头注释显式说明）；留档前同源过滤（realpath 等于下载共享 realpath 或位于其内的条目跳过，防误导后续消费诱发翻倍；软链缺失时跳过过滤、全部留档，fail-safe）；`SCAN_DIRS_FILE` 改**只写不读**（删 upgrade_callback 回读补渲染分支，文件保留不删）；`check_data_share_link()` 扩展为循环诊断**两个**软链（ok/broken/realdir/unexpected/missing 五态）并记录 `TRIM_DATA_SHARE_PATHS`，契约不变：恒 `return 0`、绝不创建/修复/删除/移动/替换任何路径（回调 uid 975 改不动 root 托管软链） |
+| 三个回调 | 调用点注释同步「仅留档」语义；`config_callback` 去掉 `changed=1`——留档不产生运行时变化，为它重启容器只会白白打断在途下载与 SSE 长连接（密码/端口等真实变更仍各自置位并重启） |
+| `fpk/wizard/{install,config}` | 字段名 `wizard_scan_dirs` 不变（改名会与回调变量名失配），label 改「音乐库导入目录备注（可选）」，helpText 如实描述新机制，不承诺未经真机验证的效果 |
+| `scripts/verify-ci.sh` | 新增 `LIBRARY_SHARE` 包级断言五组，把命名红线机械化：①resource 声明两个共享；②共享名不含斜杠且两名互不为前缀；③compose 恰好 1 条 library 字面挂载行且源为稳定软链；④容器内两挂载点互不嵌套互不重合；⑤`RO_SCAN_ROOTS` 为模板字面值、含双根、不残留 `/app/data/scan`、无废弃锚点 |
+
+**命名红线（M3 防翻倍，评审强制项）**：`rainbow-library` 必须是与 `rainbow-music` 平级的**独立顶层共享名**。若写成 `rainbow-music/library` 这类嵌套名，其宿主路径落在下载共享内部，会被 `/app/data/downloads` 与 `/app/data/library` 各扫一遍，曲库立即翻倍。现已由 `verify-ci.sh` 断言卡死，服务端另有 `normalizeScanRoots()` 兜底（见下）。
+
+### R1 真机预验证（#134，升级路径，判决 PASS）
+
+R1 核心未知点：**fnOS 升级已安装应用时，是否为新声明的 data-share 自动建目录 + 软链 + 正确挂载**。以本地构建的 manifest `0.2.16` fpk（**刻意引用 v0.2.15 GHCR 镜像**，只验打包机制、不验服务端代码）对已装 v0.2.15 现场走 Web 应用中心 `update` 端点升级，6 点取证全绿：
+
+| # | 取证点 | 结果 |
+|---|---|---|
+| ① | 升级前基线 | 单共享 `rainbow-music`、无 `rainbow-library` → 确认新声明，判决点成立 |
+| ② | 升级链 | fnOS 正确识别为对现有应用的升级（非全新安装），升级特有环境 `TRIM_OLD_APPVER` 佐证 |
+| ③ | **核心判决点** | `@appshare/rainbow-library` 目录与 `/var/apps/<app>/shares/rainbow-library` 软链**自动创建**，双根挂载生效，运行容器 `RO_SCAN_ROOTS=/app/data/downloads:/app/data/library` 字面在位，upgrade_callback 探针全链成功（无任何 FAILED） |
+| ④ | 容器 | running / healthy / restarts=0，manifest 0.2.16、config/resource 双共享 |
+| ⑤ | `GET /api/v1/me/scan-roots` | available = **2 个独立、不嵌套的根**（downloads + library） |
+| ⑥ | M3 端到端 | 向导入共享放 1 个测试音频 → 双根扫描 → 曲库 **91→92（精确 +1）**、downloads 根 91 行**未翻倍**、标签正确解析；清理后恢复 91 行干净态 |
+
+STOP 红线（library 软链 missing / 容器 crashloop / 曲库 91 行掉落 / 网关 404 / 曲库翻倍）**全部未命中** → **R1 PASS**，Track A 打包机制在升级路径成立，可纳入 v0.2.16 发布。
+
+**附加核查与观察点**：
+
+- 升级后 `/api/v1/status` 报 `gatewayHealth=suspected-unregistered`，深查为**应用侧启发式假阳性**：升级重建后进程重启、网关流量计数归零，窗口内恰无带会话的网关请求；实测网关前缀 302（路由已注册、非 404 9B）、公网入口 302、app.sock 新鲜、应用 HTTP 正常——属既知 fnOS 手动安装/升级网关注册时序现象（用 v0.2.15 官方 fpk 升级同样会重现），**非 Track A 回归**；
+- v0.2.15 镜像 digest 漂移：升级重拉后 ImageID 由 `941837b0…` 变 `f39b8b45…`（疑 CI 重建/re-tag），tag 与应用代码版本不变；#133 用真实 v0.2.16 镜像升级时须留意 tag→digest 对应，并顺带闭合 v0.2.15 遗留的「digest pin 真机安装/升级验证」盲区；
+- **范围限定**：R1 容器跑 v0.2.15 应用代码，M3 `dev:ino` 代码级去重与 loadConfig 深合并**不在该容器内**，⑥ 验证的是「独立共享天然不翻倍」（设计层）；代码级验证留 #133 用真实 v0.2.16 镜像。
+
+### 服务端配套：M3 扫描根规范化（`896438f`）
+
+曲库去重键自始至终是路径字符串（`UNIQUE(uid,path)` 与 `st.seenPaths`），两根指向同一物理目录时同一文件索引两行、曲库翻倍。v0.2.15 时该风险因 #88（第二根恒不生效）不可达；Track A 让第二根真正生效，故**必须同批根治**：
+
+- `normalizeScanRoots()` 三步规范化：逐根 `path.resolve` + `fs.realpathSync`（失败仅告警保留，不阻断）→ **`dev:ino` 物理同源去重**（辅以 realpath 字符串去重，保序）→ **两遍法嵌套剪枝**（祖先关系偏序统一判定，顺序无关，只丢严格后代、不父子俱丢）；`startScan` 接入后 DB 落库路径、进度展示、`isPathAllowed` 鉴权集合三者同一口径；仅发生剪枝时 warn 打印 requested/effective/dropped 取证日志；
+- **为什么必须 `dev:ino`**：`fs.realpathSync` 只解析符号链接，bind mount 不是符号链接、容器内也看不到宿主路径——两个 bind 到同一宿主目录的挂载点 realpath 完全不同，只有 `statSync` 的 `st_dev`/`st_ino` 相同（调研原设计「realpath 会解析到同一底层」被实测证伪）；跨挂载视角的嵌套（命名红线被破坏的场景）字符串祖先判定完全漏检，只有逐级向上 stat 祖先目录比对 `dev:ino` 才能识别；
+- `isPathAllowed` 同口径改造，realpath 形态未命中时再用原始写法比一次，**兼容升级前入库的旧字符串路径行**（避免存量曲目升级后播放 403）；
+- 已沉淀为常驻回归 `server/test/scanner.normalize.test.ts`（35 项，连同 config 深合并 65 项共 100 项断言，`npm test` 全绿，见 `docs/CHANGELOG-0.2.16.md` §五）。
+
+### 遗留与边界
+
+- 字面 #88（任意目录扫描）= Track B（转 native_app，网关链/分发/隔离全重构）或 Track C（文件开放 API，scanner 全链重写且被 token 注入阻塞），独立立项评估；
+- `wizard_scan_dirs` 字段仍随包发布（消费链复杂，强删有断链风险），处置为「label 改备注 + helpText 如实 + 只写不读」：做到「不误导」，未做到「不暴露」；是否隐藏/删除需同步 `verify-ci.sh` 断言，另行决策；
+- 旧 `scan-dirs.conf` 非空值不再被消费、不产生挂载、无副作用；文件保留不删（避免动用户数据），留作诊断痕迹与将来 Track B 的输入参考；
+- 导入语义局限：不能直接指向用户既有目录（如 `/vol1/1000/music`）；共享内文件的软链若指向共享外，容器内不可解析，故实际是「放入/移动」语义。
+
+## 安装向导：「音乐库扫描目录」配置与挂载机制（历史机制，v0.2.16 起已废弃）
+
+v0.2.1 安装向导曾新增**「音乐库扫描目录（可选）」**字段：要导入本地音乐库的 NAS 目录（绝对路径，如 `/vol1/1000/music`），可填多个（英文逗号分隔）。
+
+> ⚠️ **v0.2.16 起本章机制已废弃（#88 Track A 落地）**：导入本地音乐改用固定的 `rainbow-library` data-share 导入共享，向导字段降级为「音乐库导入目录备注（可选）」、仅作留档不产生挂载——现行机制、包内改动与 R1 真机验证见上文「#88 Track A：rainbow-library 导入共享（v0.2.16）」章。本章保留作为历史设计依据与旧版本（v0.2.1~v0.2.15）现场的排查参考。
+>
+> **历史实效 caveat（#126 评审 M7 补注，适用于 v0.2.16 以前版本）**：下述挂载机制描述的是生命周期脚本的**渲染行为**。渲染本身确实成功——真机取证见上文「data-share 与「扫描目录」重叠」章：fnOS 保存的 compose 里确有 `- /vol2/@appshare/rainbow-music:/app/data/scan/1` 挂载行与拼接后的 `RO_SCAN_ROOTS`。但**渲染结果不被容器采用**：fnOS 从安装时保存的内部模板启动容器，回调期渲染的挂载行不被采用（架构级遗留 **#88**，实测发现见本文档「#88 实测发现」第 2 条）。因此经 `.fpk` 安装/升级填写的「音乐库扫描目录」在旧版本**不生效**——运行容器内 `RO_SCAN_ROOTS` 恒为默认 `/app/data/downloads`、`/app/data/scan` 目录不存在，实际仅默认下载目录会被扫描；升级时在向导重新填写同样不生效（#88 的限制针对回调期渲染，不区分安装还是升级）。
 
 挂载机制（确定性路径，非动态探测）：
 
@@ -334,15 +400,15 @@ X-Trim-Isadmin: true|false # 是否 fnOS 管理员
 
 ### 扫描根不可见排查
 
-「NAS 音乐」页勾选了目录但扫描结果为空/为 0 时，按序检查：
+「NAS 音乐」页勾选了目录但扫描结果为空/为 0 时，按序检查（v0.2.16 起口径，#88 Track A）：
 
-> ⚠️ **当前版本预期结果（#126 评审 M7 补注）**：因架构级遗留 **#88**（fnOS 从安装时保存的内部模板启动容器、回调期渲染的挂载行不被采用，见本文档「#88 实测发现」第 2 条），下述第 1、2 项在当前版本**必然为空 / 不含 `/app/data/scan/N`**——这是 #88 的预期后果，不是本机配置错误；向导填写的扫描目录当前不生效，实际仅默认下载目录 `/app/data/downloads` 会被扫描。第 1~5 项保留作为 #88 修复后的排查流程。
+1. **文件是否在已挂载的共享内**：`docker exec rainbow ls /app/data/downloads /app/data/library` ——下载共享 `rainbow-music` 与导入共享 `rainbow-library` 是仅有的两个扫描根；放在其他任意目录的文件不会被扫到（#88 限制，向导备注字段不产生挂载）；
+2. **`RO_SCAN_ROOTS` 是否为模板字面双根**：`docker exec rainbow env | grep RO_SCAN_ROOTS` ——应恒为 `/app/data/downloads:/app/data/library`（包内模板字面值，随安装/升级被 fnOS 保存生效，不经回调渲染）；
+3. **共享软链是否有效**：`docker inspect rainbow --format '{{json .Mounts}}'` 对照 `/var/apps/com.rainbow.music/shares/{rainbow-music,rainbow-library}`；安装/升级回调日志里 `check_data_share_link` 的五态诊断（ok/broken/realdir/unexpected/missing）可直接引用；
+4. **是否已勾选**：「NAS 音乐」页扫描根配置卡勾选对应根并保存（导入目录默认未勾选，需手动勾选一次）；
+5. **目录是否为空 / 音频格式是否在白名单**：支持 mp3 / flac / m4a / ogg / opus / wav / aac。
 
-1. **容器内挂载是否生效**：`docker exec rainbow ls /app/data/scan/` ——#88 修复后应能看到向导配置的目录（编号子目录）；当前版本该目录不存在（见上方 caveat）；
-2. **`RO_SCAN_ROOTS` 是否注入**：`docker exec rainbow env | grep RO_SCAN_ROOTS` ——#88 修复后应包含 `/app/data/scan/N`；当前版本恒为默认 `/app/data/downloads`；
-3. **挂载宿主路径是否正确**：`docker inspect rainbow --format '{{json .Mounts}}'` 对照 NAS 实际路径（常见错误：填了共享文件夹的「显示名」而非绝对路径，如应填 `/vol1/1000/music` 而非 `music`）；
-4. **目录是否为空 / 音频格式是否在白名单**：支持 mp3 / flac / m4a / ogg / opus / wav / aac；
-5. 修改挂载需回到向导值：编辑 `${TRIM_PKGETC}/scan-dirs.conf` 后重启应用（生命周期脚本幂等重渲染），或升级时在向导重新填写。
+> **历史口径（v0.2.15 及以前）**：扫描挂载属回调期渲染，因 #88（fnOS 从安装时保存的内部模板启动容器、回调期渲染的挂载行不被采用，见「#88 实测发现」第 2 条）恒不生效——容器内 `/app/data/scan` 必然不存在、`RO_SCAN_ROOTS` 恒为默认 `/app/data/downloads`，这是 #88 的预期后果、不是本机配置错误；向导填写的扫描目录（含 `scan-dirs.conf` 编辑、升级时重填）均不生效，实际仅默认下载目录会被扫描。v0.2.16 起导入统一走 `rainbow-library` 共享（见「#88 Track A」章）。
 
 ## 真机验证 checklist
 
@@ -367,4 +433,4 @@ X-Trim-Isadmin: true|false # 是否 fnOS 管理员
 
 ---
 
-> 本文档的真机部分（checklist 执行结果）已由任务 #88 于 2026-08-26 回填（见上）；`core/fnos/trimapp.ts` 仍为 env 门控预留件，apiscope 契约真机联调留待后续。遗留：扫描目录挂载渲染机制因 fnOS compose 行为不生效（见「#88 实测发现」第 2 条），需改用 fnOS 原生向导目录参数实现。FN ID 浏览器全链已于 2026-08-27 网关修复后验证通过（见「v0.2.7/v0.2.8 网关 404 第三层根因」章末验清单）；有声播放留用户侧确认。
+> 本文档的真机部分（checklist 执行结果）已由任务 #88 于 2026-08-26 回填（见上）；`core/fnos/trimapp.ts` 仍为 env 门控预留件，apiscope 契约真机联调留待后续。遗留「扫描目录挂载渲染机制不生效」已于 v0.2.16 经 **#88 Track A** 处置：回调渲染职责废弃，导入改用固定 `rainbow-library` data-share 共享（R1 升级路径真机预验证 PASS，见「#88 Track A」章）；字面 #88（任意目录）的 Track B/C 独立立项。FN ID 浏览器全链已于 2026-08-27 网关修复后验证通过（见「v0.2.7/v0.2.8 网关 404 第三层根因」章末验清单）；有声播放留用户侧确认。

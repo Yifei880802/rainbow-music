@@ -835,14 +835,14 @@ curl -X PUT "$BASE/api/v1/playlists/$PID/items/order" \
 **响应 200**：
 ```json
 {
-  "available": ["/app/data/downloads", "/app/data/scan/1"],
+  "available": ["/app/data/downloads", "/app/data/library"],
   "selected": [
     { "path": "/app/data/downloads", "enabled": true, "createdAt": 1769000000000 }
   ]
 }
 ```
 
-`available` 来自容器环境变量 `RO_SCAN_ROOTS`（`:` 分隔；未设置时仅默认 `/app/data/downloads`）——由 .fpk 安装向导「音乐库扫描目录」渲染进 compose，见 [docs/FNOS-DEPLOY.md](docs/FNOS-DEPLOY.md)。
+`available` 来自容器环境变量 `RO_SCAN_ROOTS`（`:` 分隔；未设置时仅默认 `/app/data/downloads`）。自 v0.2.16（#88 Track A）起，该变量由 fpk **包内 compose 模板字面直写双根** `/app/data/downloads:/app/data/library`（分别对应两个 data-share：下载共享 `rainbow-music` 与导入共享 `rainbow-library`），**不再经安装向导回调渲染挂载**；「音乐库扫描目录」向导字段降级为可选备注、不产生挂载。两根为独立物理共享、天然不嵌套（配合服务端 `dev:ino` 同源去重杜绝曲库翻倍）。详见 [docs/FNOS-DEPLOY.md](docs/FNOS-DEPLOY.md)。
 
 ### PUT /api/v1/me/scan-roots
 
