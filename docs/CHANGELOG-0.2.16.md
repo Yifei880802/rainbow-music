@@ -6,11 +6,15 @@
 > 路径、凭据与内部运维细节——这些属于内部项目档案，不属于这里。技术结论与代码改
 > 动本身完整无删减。
 
-> **发布状态（撰写时点 2026-09-09）**：本批 8 个提交**全部仅在本地 main，未推送、
-> 未打 tag、未产生 Release**；`fpk/manifest` 与 `server/package.json` 的版本字段
-> **仍为 0.2.15 未 bump**。版本 bump 与推送/打 tag 属发布执行（#132），须用户批准
-> 后统一进行。`git show --raw` 核对 8 个提交状态位**全部为 A/M，无 rename/delete**，
-> 与逐对象复刻式发布链（已沉淀为 `github-release-chain` skill）兼容。
+> **发布状态（更新至 2026-09-09 发布前收尾）**：版本承载点（`fpk/manifest`、
+> `server/package.json` 等）已**全量 bump 至 0.2.16**（提交 `006f797`），本地门禁
+> `scripts/verify-ci.sh` 完整段 **PASS**，fnpack 官方工具已真构建出
+> `rainbow-0.2.16.fpk`。HEAD 为版本 bump 提交 `006f797` 之后的发布前收尾提交；
+> **尚未推送、尚未打 tag、未产生 Release**，发布通道已由用户裁决为普通 git push
+> （fast-forward）+ annotated tag `v0.2.16`，待一次性推送后由 tag 触发 CI。截至
+> `3a014a0`，本批提交状态位**全部为 A/M，无 rename/delete**（`git show --raw`
+> 核对）；发布不再走逐对象复刻式发布链（该链仅适用单 commit，已沉淀为
+> `github-release-chain` skill）。
 
 ---
 
@@ -181,8 +185,8 @@ Track A 的唯一实质未知点（调研风险表 R1）：**fnOS 在「升级�
 
 ## 七、明确没有做的事
 
-- **未 bump 任何版本字段**：`fpk/manifest`、`server/package.json` 等仍为 0.2.15。版本 bump 属发布执行（#132），须用户批准；提前 bump 会谎称存在一次尚未发生的发布（口径同 v0.2.15 批次的 digest pin commit）。
-- **未推送、未打 tag、未产生 Release**：8 个提交全部仅在本地 main，留待 #132 经发布链统一发布。
+- **撰写本文时点（#131）未 bump 任何版本字段**——该项已由发布执行完成：版本承载点已全量 bump 至 0.2.16（提交 `006f797`），此前「提前 bump 会谎称存在一次尚未发生的发布」的口径随之闭环。
+- **截至本文更新时仍未推送、未打 tag、未产生 Release**：本地 main 领先 `origin/main`（`933fbe7`）的提交待一次性 fast-forward 推送，随后打 annotated tag `v0.2.16` 触发 CI 产出 Release（发布通道已由用户裁决）。
 - **未做字面 #88 根治**：Track B（转 native_app）/ Track C（文件开放 API）属架构级重写，独立立项（见 §八）。
 - **未删 `wizard_scan_dirs` 字段**：与三个回调及 `scan-dirs.conf` 持久化共用，强删有安装/升级断链风险；本版处置为「label 改备注 + helpText 如实 + 只写不读」。是否隐藏/删除字段需同步 `verify-ci.sh` 断言，另行决策——本批做到「不误导」，未做到「不暴露」。
 - **未自动迁移任何用户数据**：旧 `scan-dirs.conf` 非空值不被消费、无副作用，文件保留不删。
