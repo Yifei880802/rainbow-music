@@ -17,7 +17,7 @@
 #     build-fpk.sh 走官方打包路径；下载失败不中断流水线，build-fpk.sh
 #     自行降级为手工 tar 组装（与脚本既有降级语义一致）
 #
-# Job 依赖：meta → build → docker → fpk → release
+# Job 依赖：meta → build + test（并行）→ docker → fpk → release
 
 name: build
 
@@ -87,13 +87,34 @@ jobs:
           npm run typecheck && npm run build
 
   # ─────────────────────────────────────────────
+  # ②b 单元测试（Node 20，与 build 并行；任一用例失败即门禁不通过，
+  #     docker 作业同时依赖两者，测试不过不会推镜像/出包）
+  # ─────────────────────────────────────────────
+  test:
+    name: 单元测试
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: 运行测试套件
+        working-directory: server
+        run: |
+          npm ci
+          npm test
+
+  # ─────────────────────────────────────────────
   # ③ Docker buildx 多架构镜像 → GHCR
   #    编译产物在镜像内重新生成（Dockerfile 多阶段构建），
-  #    此 job 依赖 build 仅作为「编译门禁」
+  #    此 job 依赖 build（编译门禁）与 test（测试门禁）
   # ─────────────────────────────────────────────
   docker:
     name: 构建 amd64+arm64 镜像并推送 GHCR
-    needs: [meta, build]
+    needs: [meta, build, test]
     runs-on: ubuntu-latest
     outputs:
       # 多架构 index digest（不是单平台 digest），fpk 作业据此钉死 compose 的 image 引用

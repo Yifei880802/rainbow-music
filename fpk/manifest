@@ -2,6 +2,14 @@ appname=com.rainbow.music
 version=0.2.16
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
+# App Center「已安装」卡片的分类副标题数据源是 appcenter 库 app.tags 列（fnOS 规范
+# 分类键、逗号分隔多值，如 trim.music 的 "Audio,Video Entertainment"→「影音娱乐」）。
+# 真机取证（#155）：tags 仅由商店源元数据(source_id)写入，手动安装(manual_install)应用
+# 恒为 NULL；且 trim_app_center 的 manifest INI 解析键全集不含 tags/category——即当前
+# fnOS 的 fpk manifest 没有可声明分类的字段，手装应用分类为空属平台行为、非包缺陷。
+# 故此处仅以注释留档预期取值（Rainbow 属音乐类，应对齐 Audio,Video Entertainment），
+# 不注入活跃未知键（不破坏安装优先于前向声明）；待 fnOS 支持 manifest 声明分类或
+# Rainbow 走商店上架时，按此值启用 tags 字段。详见 docs/FNOS-DEPLOY.md 对应章节。
 source=thirdparty
 micro_app=true
 platform=x86

@@ -93,6 +93,14 @@ app_service（gateway_socket 为空）→ trim_sac.entry 同步重建（同样�
    开放后应用可自检/自注册，也能彻底解决本问题；
 3. **为 Docker 应用提供 TRIM_API_TOKEN 容器注入机制**（如 compose env 渲染）：
    当前后端 API 对 Docker 形态应用形同虚设。
+4. **手动安装应用支持 manifest 声明分类（tags）并在「已安装」卡片显示版本**（#155 取证）：
+   App Center「已安装」卡片的分类副标题读 `appcenter.app.tags`，但该列仅由商店源
+   元数据(source_id)写入，手动安装(manual_install)应用恒为 NULL→副标题空；且
+   `trim_app_center` 的 manifest INI 解析键全集不含 tags/category，开发者无从在包内
+   声明分类。对照：有分类的商店应用其 manifest 亦无 tags 键（分类纯靠商店源）；同为
+   手装的 fnaudio 同样无副标题。另「已安装」卡片不渲染 manifest 已正确落库的
+   `app.version`（版本仅见于详情/确认弹窗），建议卡片补显版本。诉求：为手装应用开放
+   manifest 分类声明（或提供等价写入途径），并让已安装卡片显示 manifest 版本。
 
 ## 5. 附带安全提示（独立事项，建议评估）
 
@@ -118,6 +126,8 @@ trust 认证面的必要性与暴露范围。
 | `.qa-tmp/t107/final-report.md` | v0.2.11 真机验证报告（Phase 0 实证否决，根因链闭环） |
 | `.qa-tmp/t107/evidence-phase0.md` | docker.sock EACCES 实证、pg_hba/pg_ident 全量、/run socket 权限清单（130+ 条） |
 | `.qa-tmp/t99/`（probe43~61） | 早期网关 404 三层根因递进取证（DB 热修配方、sacentry 周期锚点、`upstream register` 日志模式） |
+| `.qa-tmp/t108/p212b-rebuilt/04-app-rows.jsonl` | appcenter.app 表行只读 SELECT（tags/version/source_id/manual_install 对照，#155 分类根因） |
+| #155 真机只读取证 | `trim_app_center` 二进制 manifest INI 解析键全集（`ini:"..."` struct tag 提取，无 tags/category）；tunnel/1Panel/fnaudio/rainbow 已安装 manifest 对照（`/var/apps/<app>/manifest`） |
 
 关联文档：应用侧问题全景与修复史见仓库 [FNOS-DEPLOY.md](FNOS-DEPLOY.md)
 「v0.2.7/v0.2.8 网关 404 第三层根因」章。

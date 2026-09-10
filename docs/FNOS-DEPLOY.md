@@ -15,6 +15,7 @@
 - [2026-08-28 音源清空与下载目录断裂：根因与热修](#2026-08-28-音源清空与下载目录断裂根因与热修)
 - [v0.2.15 下载目录挂载 data-share 与运维迁移](#v0215-下载目录挂载-data-share-与运维迁移)
 - [#88 Track A：rainbow-library 导入共享（v0.2.16）](#88-track-arainbow-library-导入共享v0216)
+- [App Center「已安装」卡片分类/版本不显示：根因（#155）](#app-center已安装卡片分类版本不显示根因155)
 - [安装向导：「音乐库扫描目录」配置与挂载机制](#安装向导音乐库扫描目录配置与挂载机制)
 - [X-Trim-* 身份头安全模型](#x-trim--身份头安全模型)
 - [错误码与降级行为](#错误码与降级行为)
@@ -347,6 +348,29 @@ STOP 红线（library 软链 missing / 容器 crashloop / 曲库 91 行掉落 / 
 - `wizard_scan_dirs` 字段仍随包发布（消费链复杂，强删有断链风险），处置为「label 改备注 + helpText 如实 + 只写不读」：做到「不误导」，未做到「不暴露」；是否隐藏/删除需同步 `verify-ci.sh` 断言，另行决策；
 - 旧 `scan-dirs.conf` 非空值不再被消费、不产生挂载、无副作用；文件保留不删（避免动用户数据），留作诊断痕迹与将来 Track B 的输入参考；
 - 导入语义局限：不能直接指向用户既有目录（如 `/vol1/1000/music`）；共享内文件的软链若指向共享外，容器内不可解析，故实际是「放入/移动」语义。
+
+## App Center「已安装」卡片分类/版本不显示：根因（#155）
+
+v0.2.16 真机观察（#151 只读复测坐实）：App Center「已安装」列表里 Rainbow 卡片的**分类/描述副标题为空**、**版本号不显示**，而同列商店应用显示「影音娱乐」「实用效率」「开发工具」等分类。经真机只读取证（#155），根因锁定为 **fnOS 平台对手动安装应用的元数据行为，非 Rainbow 包缺陷**：
+
+### 数据源与取证链
+
+| 显示项 | 数据源 | Rainbow 现状 | 取证 |
+|---|---|---|---|
+| 分类/描述副标题 | `appcenter` 库 `app.tags` 列（fnOS 规范分类键、逗号分隔多值，前端本地化后以「/」连接） | **NULL** → 副标题空 | t108 `p212b-rebuilt/04-app-rows.jsonl` 只读 SELECT：trim.music=`Audio,Video Entertainment`→影音娱乐；1Panel/python312=`Development_Tools`→开发工具；tunnel/fygo/qwenpaw=`Practical_Efficiency`→实用效率；rainbow/fnaudio=`null` |
+| 版本号 | `app.version`（安装时由 manifest `version` 解析写入） | **0.2.16 已正确落库** | 同上 dump 的 version 列；「已安装」卡片设计上只渲染 名称+tags 副标题+动作按钮，版本出现在详情/确认弹窗（AppStore 前端 JS 实证） |
+
+### 为什么 manifest 修不了分类
+
+1. **tags 仅由商店源写入**：`tags` 非空的应用均 `manual_install=f` 且 `source_id` 非空（商店渠道）；手动安装（`manual_install=t`、`source_id` 空）一律 `tags=NULL`——对照同为手装的 fnaudio 同样无副标题，与复测一致；
+2. **manifest 无分类字段**：`/usr/trim/bin/trim_app_center` 的 manifest INI 解析键全集（`ini:"..."` struct tag 提取，含 app_name/version/desc/display_name/micro_app/changelog 等 49 键）**不含 tags 也不含 category**；官方 manifest 文档同样未记载分类字段；
+3. **决定性对照**：有分类的 tunnel/1Panel 的已安装 manifest 里同样**没有**任何 tags/category 键——它们的分类来自商店源元数据，而非包内 manifest。
+
+### 处置（v0.2.16 工作树，#155）
+
+- `fpk/manifest` 以**注释**留档预期分类取值（音乐类对齐 `Audio,Video Entertainment`），**不注入活跃未知键**——不破坏安装优先于前向声明（本机无 Docker、重装验证推迟到 v0.2.17，无法实机确认未知键行为；且当前解析器已实证忽略该键，活跃声明零收益）；
+- 版本字段保持单一真源 `0.2.16` 不动（已正确落库，非缺陷）；
+- 用户可见修复依赖 fnOS 侧：诉求已并入 [FNOS-FEEDBACK.md](FNOS-FEEDBACK.md) 第 4 项（手装应用支持 manifest 声明分类 + 已安装卡片显示 manifest 版本）；或 Rainbow 走商店上架（商店索引携带分类）。
 
 ## 安装向导：「音乐库扫描目录」配置与挂载机制（历史机制，v0.2.16 起已废弃）
 

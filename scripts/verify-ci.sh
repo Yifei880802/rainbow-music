@@ -2,17 +2,25 @@
 #
 # verify-ci.sh —— Rainbow 发布前本地 CI 门禁（一键复跑 .github/workflows/build.yml 前四段）
 #
-# 对应 workflow 作业链：meta → build → docker → fpk（release 为 GitHub 侧动作，不在本地复跑）
+# 作业链：heal → meta → build → test → docker → fpk（release 为 GitHub 侧动作，不在本地复跑）
+#   heal  ：本地新增断言段（workflow 无对应 job）——scripts/fnos-gateway-heal.sh 包级
+#           断言：bash -n 语法门禁、退出码口径契约（--help=0 / 未知参数=1 / 非 root
+#           --dry-run=4）、530 红线关键字在位（不重启 trim_http_cgi 的红线标记）、
+#           重启类危险命令零执行（可 --skip-heal 跳过；不依赖 docker、秒级完成）
 #   a. meta   ：版本校验（正则与 workflow meta 一致）并推导 image_tag=v${VERSION}
 #   b. build  ：cd server && npm ci（仅 node_modules 缺失时）&& npm run typecheck && npm run build
-#   c. docker ：docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .（可 --skip-docker 跳过）
-#   d. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST 调
+#   c. test   ：cd server && npm test（Node 内置 test runner，可 --skip-test 跳过）
+#               对应 workflow 的 test job；任一用例失败 → 该段 FAIL、门禁不通过
+#   d. docker ：docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .（可 --skip-docker 跳过）
+#   e. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST 调
 #               scripts/build-fpk.sh，解包产物并程序化校验 compose 内 image 与预期引用
 #               （${FPK_IMAGE}:${image_tag}；给了 digest 则为 …@${FPK_IMAGE_DIGEST}）逐字符一致
 #
 # 用法示例：
 #   scripts/verify-ci.sh                            # 全量门禁（需 docker/buildx 可用，默认 linux/arm64）
 #   scripts/verify-ci.sh --skip-docker              # 跳过 buildx 构建与镜像检查（无 docker 环境/与他人共用 colima 时）
+#   scripts/verify-ci.sh --skip-test                # 跳过 npm test 段（该段记为 SKIP）
+#   scripts/verify-ci.sh --skip-heal                # 跳过 heal 脚本断言段（该段记为 SKIP）
 #   scripts/verify-ci.sh --platform linux/amd64     # 指定构建平台
 #   VERSION=0.2.0-r1 scripts/verify-ci.sh           # 指定版本号（默认取 fpk/manifest 的 version）
 #   scripts/verify-ci.sh 0.2.0-r1 --skip-docker     # 版本号也可作首个位置参数
@@ -21,6 +29,8 @@
 #   VERSION      可选。X.Y.Z 或 X.Y.Z-rN，校验 ^[0-9]+\.[0-9]+\.[0-9]+(-r[0-9]+)?$；
 #                未提供时读 fpk/manifest 的 version 字段
 #   --skip-docker  跳过 docker 段（该段记为 SKIP，不影响最终结论）
+#   --skip-test    跳过 test 段（npm test；该段记为 SKIP，不影响最终结论）
+#   --skip-heal    跳过 heal 段（heal 脚本包级断言；该段记为 SKIP，不影响最终结论）
 #   --platform   buildx 目标平台，默认 linux/arm64
 #   FPK_IMAGE    镜像名，默认 rainbow-music（本地门禁用短名即可；正式发布时 workflow 注入 ghcr.io/<owner>/rainbow-music）
 #   FPK_IMAGE_DIGEST  可选。镜像 index digest（sha256:<64 位小写 hex>）。提供时预期引用变为
@@ -77,15 +87,19 @@ trap cleanup EXIT INT TERM
 
 # ─────────────────────────── 参数解析 ───────────────────────────
 
-usage() { sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
 
 SKIP_DOCKER=0
+SKIP_TEST=0
+SKIP_HEAL=0
 PLATFORM="linux/arm64"
 VERSION="${VERSION:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-docker) SKIP_DOCKER=1 ;;
+        --skip-test) SKIP_TEST=1 ;;
+        --skip-heal) SKIP_HEAL=1 ;;
         --platform)
             [[ $# -ge 2 ]] || { log "错误：--platform 缺少参数"; exit 1; }
             PLATFORM="$2"; shift ;;
@@ -110,6 +124,80 @@ if [[ -n "$FPK_IMAGE_DIGEST" && ! "$FPK_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]
     log "错误：FPK_IMAGE_DIGEST 格式非法（要求 sha256:<64 位小写 hex>）：'$FPK_IMAGE_DIGEST'"
     exit 1
 fi
+
+# ─────────────────────────── 0. heal 断言 ───────────────────────────
+# 本地新增段（workflow 无对应 job）：把 docs/FNOS-GATEWAY-HEAL.md 交接中的人工
+# 核实项机械化（ID:153 交接建议）——bash -n 语法门禁、退出码口径契约（runbook
+# 第 6 节同口径：--help=0 / 未知参数=1 / 非 root --dry-run=4，preflight 首条即
+# root 检查，不触碰 docker，本机秒级完成）、530 红线关键字在位与危险命令零执行。
+
+heal_expect_keyword() { # heal_expect_keyword <heal 脚本路径> <关键字> <说明>
+    local heal="$1" kw="$2" desc="$3"
+    if grep -Fq "$kw" "$heal"; then
+        log "红线关键字在位：'${kw}'（${desc}）"
+        return 0
+    fi
+    log "${C_RED}${C_BOLD}HEAL_REDLINE_FAIL${C_NC}：530 红线关键字 '${kw}' 不在位（${desc}）"
+    return 1
+}
+
+stage_heal() {
+    if [[ "$SKIP_HEAL" -eq 1 ]]; then
+        log "--skip-heal 已指定，跳过 heal 脚本包级断言"
+        return 2   # 2 = SKIP
+    fi
+    local heal="$REPO_ROOT/scripts/fnos-gateway-heal.sh"
+    [[ -f "$heal" ]] || { log "错误：找不到 scripts/fnos-gateway-heal.sh"; return 1; }
+
+    # 1) 语法门禁
+    bash -n "$heal" || { log "${C_RED}${C_BOLD}HEAL_SYNTAX_FAIL${C_NC}：bash -n 语法检查不通过"; return 1; }
+    log "HEAL_SYNTAX_PASS：bash -n 语法检查通过"
+
+    # 2) 退出码口径契约（runbook 第 6 节同口径）。--dry-run 断言仅在非 root 语境
+    #    成立（preflight 首条 = root 检查 → exit 4，先于 docker 探测，不碰 daemon）；
+    #    root 语境下 --dry-run 会走真通道，故降级为告警不断言，门禁本身绝不碰库。
+    local rc=0
+    bash "$heal" --help >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        log "${C_RED}${C_BOLD}HEAL_EXITCODE_FAIL${C_NC}：--help 退出码 ${rc}，预期 0"; return 1
+    fi
+    rc=0
+    bash "$heal" --verify-ci-unknown-arg >/dev/null 2>&1 || rc=$?
+    if [[ "$rc" -ne 1 ]]; then
+        log "${C_RED}${C_BOLD}HEAL_EXITCODE_FAIL${C_NC}：未知参数退出码 ${rc}，预期 1"; return 1
+    fi
+    if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+        rc=0
+        bash "$heal" --dry-run >/dev/null 2>&1 || rc=$?
+        if [[ "$rc" -ne 4 ]]; then
+            log "${C_RED}${C_BOLD}HEAL_EXITCODE_FAIL${C_NC}：非 root --dry-run 退出码 ${rc}，预期 4（preflight root 检查）"; return 1
+        fi
+    else
+        log "${C_YELLOW}当前为 root 语境，跳过 --dry-run rc=4 断言（避免走真实通道）${C_NC}"
+    fi
+    log "HEAL_EXITCODE_PASS：--help=0 / 未知参数=1 / 非 root --dry-run=4 契约在位"
+
+    # 3) 530 红线关键字在位（不重启 trim_http_cgi 的红线标记，字面取自 heal 脚本现行文案）
+    local kw
+    for kw in "530" "trim_http_cgi" "禁止】重启网关进程" "必须人工确认" "恢复需"; do
+        heal_expect_keyword "$heal" "$kw" "530 断联红线标记" || return 1
+    done
+    log "HEAL_REDLINE_PASS：530 红线关键字全部在位"
+
+    # 4) 重启类危险命令零执行：reboot / restart 命中行必须带「禁止」标记（注释或
+    #    heredoc 提示文案，如「【禁止】重启网关进程 … reboot NAS」）；其余命中
+    #    一律视为真实重启动作违规——heal 脚本只允许提示，绝不允许执行
+    local danger
+    danger="$(grep -nE 'reboot|restart' "$heal" | grep -v '禁止' || true)"
+    if [[ -n "$danger" ]]; then
+        log "${C_RED}${C_BOLD}HEAL_DANGER_FAIL${C_NC}：发现不带「禁止」标记的 reboot/restart 命中行（heal 脚本只允许禁止类提示文案，绝不允许真实重启动作）："
+        printf '%s\n' "$danger"
+        return 1
+    fi
+    log "HEAL_DANGER_PASS：reboot/restart 命中行均为禁止类提示文案，无真实重启动作"
+
+    return 0
+}
 
 # ─────────────────────────── a. meta ───────────────────────────
 # 对应 workflow job「meta：解析版本号」
@@ -149,7 +237,29 @@ stage_build() {
     return 0
 }
 
-# ─────────────────────────── c. docker ───────────────────────────
+# ─────────────────────────── c. test ───────────────────────────
+# 对应 workflow job「test：单元测试」（npm test，Node 内置 test runner）
+
+stage_test() {
+    if [[ "$SKIP_TEST" -eq 1 ]]; then
+        log "--skip-test 已指定，跳过 npm test"
+        return 2   # 2 = SKIP
+    fi
+    [[ -f "$REPO_ROOT/server/package.json" ]] || { log "错误：找不到 server/package.json"; return 1; }
+    (
+        cd "$REPO_ROOT/server"
+        if [[ ! -d node_modules ]]; then
+            log "node_modules 缺失，执行 npm ci"
+            npm ci || { log "错误：npm ci 失败"; return 1; }
+        else
+            log "node_modules 已存在，跳过 npm ci"
+        fi
+        npm test || { log "错误：npm test 失败（任一用例失败即门禁不通过）"; return 1; }
+    ) || return 1
+    return 0
+}
+
+# ─────────────────────────── d. docker ───────────────────────────
 # 对应 workflow job「docker：buildx 构建」（本地只 --load 不推送）
 
 stage_docker() {
@@ -172,7 +282,7 @@ stage_docker() {
     return 0
 }
 
-# ─────────────────────────── d. fpk ───────────────────────────
+# ─────────────────────────── e. fpk ───────────────────────────
 # 对应 workflow job「fpk：打包 .fpk」+ 本地追加的 tag 一致性程序化校验
 
 stage_fpk() {
@@ -426,18 +536,21 @@ run_stage() { # run_stage <name> <fn>
     LAST_RESULT="${STAGE_RESULTS[${#STAGE_RESULTS[@]}-1]}"
 }
 
-log "Rainbow 本地 CI 门禁启动：对应 workflow 作业链 meta → build → docker → fpk"
+log "Rainbow 本地 CI 门禁启动：作业链 heal → meta → build → test → docker → fpk"
 
+# heal 段不依赖 VERSION / node_modules，最先跑：秒级完成，坏了立刻暴露
+run_stage "heal"   stage_heal
 run_stage "meta"   stage_meta
 
 # meta 失败则 VERSION/IMAGE_TAG 未就绪，后续段无意义，直接汇总退出
 if [[ "$LAST_RESULT" != "FAIL" ]]; then
     run_stage "build"  stage_build
+    run_stage "test"   stage_test
     run_stage "docker" stage_docker
     run_stage "fpk"    stage_fpk
 fi
 
-# ─────────────────────────── e. 汇总 ───────────────────────────
+# ─────────────────────────── f. 汇总 ───────────────────────────
 
 section "汇总"
 FAIL_COUNT=0
