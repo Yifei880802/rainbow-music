@@ -11,6 +11,7 @@
 - [v0.2.5 网关链路修复：micro_app、前缀转发与单入口](#v025-网关链路修复micro_app前缀转发与单入口)
 - [v0.2.6 网关就绪修复：service_port=0 与 checkport=false](#v026-网关就绪修复service_port0-与-checkportfalse)
 - [v0.2.7/v0.2.8 网关 404 第三层根因：数据库 socket 字段为空与 DB 热修](#v027v028-网关-404-第三层根因数据库-socket-字段为空与-db-热修)
+  - ⚠️ 配套可执行 runbook 与脚本：[FNOS-GATEWAY-HEAL.md](FNOS-GATEWAY-HEAL.md) + `scripts/fnos-gateway-heal.sh`（含 530 红线、退出码口径、cron 兜底变体）
 - [2026-08-28 音源清空与下载目录断裂：根因与热修](#2026-08-28-音源清空与下载目录断裂根因与热修)
 - [v0.2.15 下载目录挂载 data-share 与运维迁移](#v0215-下载目录挂载-data-share-与运维迁移)
 - [#88 Track A：rainbow-library 导入共享（v0.2.16）](#88-track-arainbow-library-导入共享v0216)
@@ -143,6 +144,17 @@ WHERE app_name='com.rainbow.music' AND service_name='com.rainbow.music.Applicati
 ```
 
 **生效时机**：sacentry 周期任务每 30 分钟跑一次（trim_sac 服务启动后整点偏移，本机锚点 xx:00:58/xx:01:05）；DB 直改不触发即时注册，须等下一周期。本机实测：20:31 UPDATE entry → 20:42 UPDATE app_service → **21:01:05 周期注册成功**（syslog 出现 `upstream register app=com.rainbow.music ... var/apps/com.rainbow.music/target/app.sock`），随后认证请求 `GET /app/com.rainbow.music/` 200（31145B 应用 HTML）。
+
+> ⚠️ **运维红线（530 教训，必读）**：为「即时生效」重启网关进程 `trim_http_cgi`
+> 曾导致**全站 Cloudflare 隧道断开（公网入口全部 530）、远程通道全断，恢复需
+> 用户到 NAS 现场物理介入**——爆炸半径是全站公网入口，不是单应用路由。DB
+> 直改后**一律等下一个 sacentry 周期（≤30 分钟）**，任何 agent/自动化/脚本禁止
+> 重启 `trim_http_cgi`、cloudflared/隧道类应用或 reboot NAS。完整红线清单（含
+> 「重启应用容器」「卸载重装」的适用边界）见 [FNOS-GATEWAY-HEAL.md](FNOS-GATEWAY-HEAL.md) 第 4 节。
+>
+> 本节 SQL 已正式化为可执行 runbook + 幂等 heal 脚本：[FNOS-GATEWAY-HEAL.md](FNOS-GATEWAY-HEAL.md)
+> 与 `scripts/fnos-gateway-heal.sh`（root 语境；退出码区分「已是正确状态/本次发生
+> 写入」；含「补写后仍 404」排查树与 cron 兜底变体）。
 
 ### 终验结果（2026-08-27 21:01 ~ 08-28 10:30，连续运行 13h+）
 

@@ -6,12 +6,15 @@
 > 路径、凭据与内部运维细节——这些属于内部项目档案，不属于这里。技术结论与代码改
 > 动本身完整无删减。
 
-> **发布状态（更新至 2026-09-09 发布前收尾）**：版本承载点（`fpk/manifest`、
+> **发布状态（已于 2026-09-09 发布）**：版本承载点（`fpk/manifest`、
 > `server/package.json` 等）已**全量 bump 至 0.2.16**（提交 `006f797`），本地门禁
 > `scripts/verify-ci.sh` 完整段 **PASS**，fnpack 官方工具已真构建出
-> `rainbow-0.2.16.fpk`。HEAD 为版本 bump 提交 `006f797` 之后的发布前收尾提交；
-> **尚未推送、尚未打 tag、未产生 Release**，发布通道已由用户裁决为普通 git push
-> （fast-forward）+ annotated tag `v0.2.16`，待一次性推送后由 tag 触发 CI。截至
+> `rainbow-0.2.16.fpk`。本批提交已 fast-forward 推送至远端 `main`，并打 annotated
+> tag **`v0.2.16`**（tag 对象 `81e1ca7` → 提交 `b0c5776`）触发 CI：build workflow
+> （event=push、head_branch=`v0.2.16`）conclusion=**success**，GHCR 镜像、
+> `rainbow-0.2.16.fpk` 与 Release「Rainbow v0.2.16」（published_at
+> 2026-09-09T09:11:10Z）全部产出。发布通道即此前裁决的普通 git push
+> （fast-forward）+ annotated tag `v0.2.16`。截至
 > `3a014a0`，本批提交状态位**全部为 A/M，无 rename/delete**（`git show --raw`
 > 核对）；发布不再走逐对象复刻式发布链（该链仅适用单 commit，已沉淀为
 > `github-release-chain` skill）。
@@ -186,7 +189,7 @@ Track A 的唯一实质未知点（调研风险表 R1）：**fnOS 在「升级�
 ## 七、明确没有做的事
 
 - **撰写本文时点（#131）未 bump 任何版本字段**——该项已由发布执行完成：版本承载点已全量 bump 至 0.2.16（提交 `006f797`），此前「提前 bump 会谎称存在一次尚未发生的发布」的口径随之闭环。
-- **截至本文更新时仍未推送、未打 tag、未产生 Release**：本地 main 领先 `origin/main`（`933fbe7`）的提交待一次性 fast-forward 推送，随后打 annotated tag `v0.2.16` 触发 CI 产出 Release（发布通道已由用户裁决）。
+- **本版已推送、已打 tag、已产生 Release**（2026-09-09）：本地 main 领先 `origin/main`（`933fbe7`）的提交已一次性 fast-forward 推送，annotated tag `v0.2.16`（`81e1ca7` → `b0c5776`）触发 CI 成功产出 GHCR 镜像、`rainbow-0.2.16.fpk` 与 Release「Rainbow v0.2.16」——即此前「未推送、未打 tag、未产生 Release」口径已闭环。
 - **未做字面 #88 根治**：Track B（转 native_app）/ Track C（文件开放 API）属架构级重写，独立立项（见 §八）。
 - **未删 `wizard_scan_dirs` 字段**：与三个回调及 `scan-dirs.conf` 持久化共用，强删有安装/升级断链风险；本版处置为「label 改备注 + helpText 如实 + 只写不读」。是否隐藏/删除字段需同步 `verify-ci.sh` 断言，另行决策——本批做到「不误导」，未做到「不暴露」。
 - **未自动迁移任何用户数据**：旧 `scan-dirs.conf` 非空值不被消费、无副作用，文件保留不删。

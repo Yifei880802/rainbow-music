@@ -27,6 +27,7 @@ rainbow/
 ├── scripts/
 │   ├── build-fpk.sh       # fpk 打包脚本（读 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG）
 │   ├── verify-ci.sh       # 发布前本地 CI 门禁（一键复跑 workflow 前四段）
+│   ├── fnos-gateway-heal.sh # fnOS 网关字段 heal（root 语境运维脚本，配套 docs/FNOS-GATEWAY-HEAL.md）
 │   └── bench.mjs          # 性能基准脚本
 ├── data/                  # 运行数据（downloads / sources / db，volume 映射）
 ├── .github/workflows/     # CI：build.yml（tag v* → 镜像 → fpk → Release）

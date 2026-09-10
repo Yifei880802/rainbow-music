@@ -374,12 +374,25 @@ rb_psql() {
     #   20 轮 UPDATE 全部失败；详见 docs/FNOS-DEPLOY.md v0.2.11~v0.2.14 段）。
     #   故网关 socket 补写在真机靠 heal 手修配方（root 语境）+ 诊断横幅兜底，
     #   而非回调内自动补写。本函数本体保留供 heal 配方（root 语境）复用，勿删。
+    # ⚠️ 容器侧路径修正（ID:148 评审第 1 条同源缺陷，潜在正确性修复、不改变
+    #   现网行为）：docker run 的 --entrypoint 与其后路径参数在「新容器」命名
+    #   空间解析——宿主 /usr 挂到容器 /husr，而镜像基于 node:22-bookworm-slim
+    #   （不含 postgresql-client），旧写法用 /usr/... 必然容器内找不到文件。
+    #   真机实证成功的配方（.qa-tmp/t114/probe-repro.sh 变体 B，rc=0）容器侧
+    #   一律 /husr/... 前缀。本函数旧写法从未在真机执行到过 ld.so（回调 uid 975
+    #   卡在 docker.sock EACCES，20/20 轮全失败，t114/t117 实证），故本修正
+    #   不改变现网可观测行为；真正被验证的载体是 root 语境的
+    #   scripts/fnos-gateway-heal.sh。
     # 依赖：docker CLI、宿主 loader/psql、compose 落盘文件的 image: 行
     # （用 rainbow 自身镜像，与宿主 lib 兼容已实证）；回调 uid 975 下 docker CLI
     # 因 docker.sock EACCES 不可用（见上「适用边界」）。
     local db="$1" sql="$2" img errf
+    # 宿主命名空间（仅供存在性预检）
     local loader=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
     local psqlbin=/usr/lib/postgresql/15/bin/psql
+    # 容器命名空间（docker run 内解析，/usr→/husr 映射，见上注）
+    local cloader=/husr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+    local cpsqlbin=/husr/lib/postgresql/15/bin/psql
     rb_psql_err=""
     command -v docker >/dev/null 2>&1 || { rb_psql_err="docker CLI 不可用"; return 1; }
     [ -x "$loader" ] || { rb_psql_err="宿主 loader 缺失（${loader}，非 x86_64 或路径变化）"; return 1; }
@@ -396,9 +409,9 @@ rb_psql() {
     errf="/tmp/rb-psql-err.$$"
     if docker run --rm \
         -v /usr:/husr:ro -v /run:/hrun:ro \
-        --entrypoint "$loader" "$img" \
+        --entrypoint "$cloader" "$img" \
         --library-path /husr/lib/x86_64-linux-gnu:/husr/lib:/husr/lib/postgresql/15/lib \
-        "$psqlbin" -h /hrun/postgresql -U postgres -d "$db" -Atc "$sql" 2>"$errf"; then
+        "$cpsqlbin" -h /hrun/postgresql -U postgres -d "$db" -Atc "$sql" 2>"$errf"; then
         rm -f "$errf" 2>/dev/null
         return 0
     fi
@@ -448,6 +461,11 @@ render_gateway_watch_script() {
     # 运行期变量（$QOUT/$WERR/$i/$0 等）原样透传，仅固定参数在生成时内插。
     # v0.2.11：SQL 执行与 rb_psql 同款 docker run 调用（镜像名从 compose 取后内插）；
     # 每轮往 @LOG@（TRIM_APPDEST/gateway-watch.log）追加观测行，失败不再静默。
+    # @LOADER@/@PSQL@ 内插容器命名空间路径（/husr/... 前缀，ID:148 评审第 1 条
+    # 同源修正，潜在正确性修复、不改变现网行为，理由见 rb_psql 注）：模板内
+    # 两者仅被 docker run（容器侧解析）与宿主侧 [ -x ] 预检消费，后者在宿主
+    # /husr 不存在时照旧走 reason=loader-or-psql-missing 早退分支（与现网
+    # uid 975 全败结局等价，均不产生任何写入）。
     # 本机验证入口：本函数输出重定向到文件后 sh -n 即可干跑语法检查。
     local app service sock prefix img logf appdest
     app="${APP_NAME}"
@@ -459,8 +477,8 @@ render_gateway_watch_script() {
     img=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$COMPOSE_FILE" 2>/dev/null | head -1 | tr -d "\"'")
     [ -n "$img" ] || img="UNRESOLVED"
     sed -e "s|@IMG@|$(sed_escape_rhs "$img")|g" \
-        -e "s|@LOADER@|/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2|g" \
-        -e "s|@PSQL@|/usr/lib/postgresql/15/bin/psql|g" \
+        -e "s|@LOADER@|/husr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2|g" \
+        -e "s|@PSQL@|/husr/lib/postgresql/15/bin/psql|g" \
         -e "s|@LOG@|$(sed_escape_rhs "$logf")|g" \
         -e "s|@APP@|$(sed_escape_rhs "$app")|g" \
         -e "s|@SVC@|$(sed_escape_rhs "$service")|g" \
@@ -605,6 +623,8 @@ fix_gateway_socket_watch() {
     # 幂等无害：install/upgrade 各启动一次；fnOS 升级链重跑 install_callback
     # 的场景可能并发两个 watcher，UPDATE 仅补空字段，互不冲突。
     local img loader psqlbin tmp appdest
+    # 宿主命名空间路径，仅供启动前存在性预检；watcher 模板内 docker run 用的是
+    # 容器命名空间 /husr/...（见 render_gateway_watch_script 注）
     loader=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
     psqlbin=/usr/lib/postgresql/15/bin/psql
     appdest="${TRIM_APPDEST:-/vol2/@appcenter/${APP_NAME}}"
