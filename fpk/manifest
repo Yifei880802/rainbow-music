@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.16
+version=0.2.17
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 # App Center「已安装」卡片的分类副标题数据源是 appcenter 库 app.tags 列（fnOS 规范
@@ -22,4 +22,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=新增固定的「音乐库导入目录」共享 rainbow-library：在飞牛文件管理器把要导入的音乐放入（或移动到）该共享，即自动纳入曲库（下载目录 downloads 与导入目录 library 双扫描根，前端「NAS 音乐」页勾选导入根）。修复设置页在旧配置缺少部分字段（告警、鉴权、冒烟自检等子项）时打开报 500 的问题，并对配置加载做默认值深合并加固。曲库扫描按物理同源（dev:ino）去重并对嵌套目录剪枝，杜绝同一目录被两个扫描根重复索引导致的曲库翻倍。补齐服务端首批常驻回归测试（config 深合并与扫描根规范化）。
+changelog=本次为维护性更新，应用功能与曲库行为与 v0.2.16 一致。新增 fnOS 网关字段自愈运维脚本与操作手册：网关前缀出现 404 时，运维可按 runbook 以幂等、可先只读预演（dry-run）的方式补写网关字段，并内置「禁止重启网关进程/隧道/reboot」的断联红线护栏（历史误重启曾致公网入口全断、需现场恢复）。发布门禁补齐单元测试作业：服务端 100 项常驻回归测试纳入 CI 与本地门禁，测试不通过则不推镜像、不打包；并将网关 heal 脚本的语法、退出码口径与红线关键字在位等约束机械化断言。完善部署/反馈文档，并留档「飞牛 App Center 手动安装应用的分类副标题为空、版本号不在已安装卡片显示」经真机取证属平台行为、非本包缺陷。

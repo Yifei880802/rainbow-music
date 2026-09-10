@@ -1,4 +1,4 @@
-# Rainbow fnOS 部署指南（v0.2.16）
+# Rainbow fnOS 部署指南（v0.2.17）
 
 面向 fnOS（飞牛 OS）部署与运维场景的说明：版本要求、双模式（端口直连 / FN ID 统一网关）、网关链路修复（micro_app 与前缀转发）、本地音乐库挂载机制（v0.2.16 起为 #88 Track A 导入共享）、安全模型与降级行为。日常使用见 [USER-GUIDE](USER-GUIDE.md)，API 契约见 [API.md](../API.md)。
 
