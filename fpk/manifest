@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.17
+version=0.2.18
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 # App Center「已安装」卡片的分类副标题数据源是 appcenter 库 app.tags 列（fnOS 规范

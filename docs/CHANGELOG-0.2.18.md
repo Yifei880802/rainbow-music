@@ -1,8 +1,8 @@
-# 变更清单：v0.2.16 → v0.2.17
+# 变更清单：v0.2.16 → v0.2.18
 
-基线 `b0c5776`（tag `v0.2.16` 指向的提交，远端 main 现状）→ 本地领先 **2 个功能提交**（`0e9f24a`、`61aeaf6`，2026-09-10），撰写本文的发布提交（版本 bump + 本 CHANGELOG）追加为第 3 个。两个功能提交共改动 **10 个文件、+1217 / −20**。
+基线 `b0c5776`（tag `v0.2.16` 指向的提交）→ **2 个功能提交**（`0e9f24a`、`61aeaf6`，2026-09-10，共改动 **10 个文件、+1217 / −20**）→ **发布提交 `91bf9b8`**（bump 0.2.17 + 本 CHANGELOG 初稿，已 fast-forward 推送并打 annotated tag `v0.2.17`）→ **本版发布提交**（bump 0.2.18 + test 可移植性修复 + 本文改名为 `CHANGELOG-0.2.18.md`）。tag `v0.2.17` 触发的 CI 在**单元测试门禁**失败（Linux 上 1 项既有测试的平台假设不成立，详见 §3.4），已按 **fix-forward** 处置：`v0.2.17` 作为「已 push、CI 失败、零产物」的诚实烧号留档，**不删除、不重指**，改由 **`v0.2.18`** 承载本次发布。
 
-> **本版为维护性发布（运维 / CI 门禁 / 文档）**：两个功能提交**不含任何 `server/src` 应用功能代码改动**——服务端音乐应用的行为、接口契约与曲库逻辑与 v0.2.16 **完全一致**。发布提交仅 bump 版本承载常量（`status.ts` / `scrape-detail.ts` 的版本字符串等），不改变运行时行为。因此 GHCR 镜像会随 tag 重新构建（携带新版本号），但**应用可观测行为与 v0.2.16 等价**。
+> **本版为维护性发布（运维 / CI 门禁 / 文档）**：两个功能提交**不含任何 `server/src` 应用功能代码改动**——服务端音乐应用的行为、接口契约与曲库逻辑与 v0.2.16 **完全一致**。发布提交仅 bump 版本承载常量（`status.ts` / `scrape-detail.ts` 的版本字符串等），不改变运行时行为。因此 GHCR 镜像会随 tag 重新构建（携带新版本号），但**应用可观测行为与 v0.2.16 等价**。本版另含一处 **test-only 可移植性修复**（`server/test/scanner.normalize.test.ts`，§3.4），仅改测试、不动任何 `server/src` 产品代码，对镜像与 `.fpk` 的运行时行为零影响。
 
 > **本文是对外可读版本。** 仓库公开，因此不写 NAS 主机名、备份与证据树的具体落盘
 > 路径、凭据与内部运维细节——这些属于内部项目档案，不属于这里。技术结论与代码改
@@ -10,18 +10,29 @@
 
 > **发布状态**：版本承载点（`fpk/manifest`、`server/package.json`、`status.ts`、
 > `scrape-detail.ts` MB UA、`API.md` status 示例、`verify-image.sh` 默认镜像 tag、
-> `docs/FNOS-DEPLOY.md` 标题）已在发布提交中**全量 bump 至 0.2.17**；本地门禁
+> `docs/FNOS-DEPLOY.md` 标题）已**全量 bump 至 0.2.18**；本地门禁
 > `scripts/verify-ci.sh --skip-docker` 结论 **PASS（可发布）**——heal / meta / build /
 > test（`npm test` **100 / 100**）/ fpk 五段全绿，docker 段因本机无运行时记 SKIP
-> （不影响结论），fnpack 官方工具已真构建出 `rainbow-0.2.17.fpk` 且包级断言
+> （不影响结论），fnpack 官方工具已真构建出 `rainbow-0.2.18.fpk` 且包级断言
 > （TAG_CONSISTENCY / DOWNLOAD_MOUNT / WIZARD_FIELD / DDIR_CONVERGE /
-> LIBRARY_SHARE）全 PASS。本批提交经 **Xcode-beta git 2.54.0** fast-forward 推送至
-> 远端 `main`，并打 annotated tag **`v0.2.17`** 触发 `build.yml`（`on.push.tags: v*`）；
-> CI 产物（GHCR 双架构镜像 / `.fpk` / GitHub Release）的终态以本次发布执行的
-> `ci-poll` 与 Release 页为准。发布通道说明：本机多个 git 的 push 写方向断裂
-> （坑 5），仅 Xcode-beta git 经 `push --dry-run` 实证可用，通道选择由
-> `github-release-chain` skill 的 `git-push-preflight.sh` 探测——**该 push 通道修复属
-> skill 侧、不在本仓库，故不计入本 CHANGELOG 的仓库改动**。
+> LIBRARY_SHARE）全 PASS。
+>
+> **fix-forward 说明（审计诚实）**：本批最初以 `v0.2.17` 发布——提交 `91bf9b8`
+> 经 **Xcode-beta git 2.54.0** fast-forward 推送至远端 `main` 并打 annotated tag
+> `v0.2.17` 触发 `build.yml`；但该 run 在**本版新增的单元测试门禁**上失败
+> （conclusion=failure，docker/fpk/release 三 job 全部 skipped，**零产物泄漏**）：
+> 唯一失败用例 `scanner.normalize.test.ts` A2 的前提假设「fixture 路径经符号链接」
+> 只在 macOS 成立（`os.tmpdir()` 经 `/var→/private/var`），Linux runner 的 `/tmp`
+> 是真实目录 → 前提守卫假失败（根因与修复见 §3.4）。这是 v0.2.16/#135 批次的既有
+> 测试，因本版 #140 首次把 `npm test` 纳入 CI 才在 Linux 暴露——**门禁正确拦截了
+> 一次带病发布**。按 fix-forward：`v0.2.17` tag **不删除、不重指**，作为诚实烧号
+> 留档；test 修复连同版本 bump 0.2.18 提交入 main，打 annotated tag **`v0.2.18`**
+> 重新触发 `build.yml`（`on.push.tags: v*`）。v0.2.18 的 CI 产物（GHCR 双架构镜像 /
+> `.fpk` / GitHub Release）终态以本次发布执行的 `ci-poll` 与 Release 页为准。
+> 发布通道说明：本机多个 git 的 push 写方向断裂（坑 5），仅 Xcode-beta git 经
+> `push --dry-run` 实证可用，通道选择由 `github-release-chain` skill 的
+> `git-push-preflight.sh` 探测——**该 push 通道修复属 skill 侧、不在本仓库，故不计入
+> 本 CHANGELOG 的仓库改动**。
 
 ---
 
@@ -31,9 +42,10 @@
 |---|---|---|---|
 | `0e9f24a` | 2026-09-10 17:03 | `feat(ops): 新增 fnOS 网关字段 heal 运维脚本与 runbook，配套 530 红线回填与 _common /husr 同源修正` | 6 文件（含 2 新增）+1194/−8 |
 | `61aeaf6` | 2026-09-10 19:00 | `ci(gate): 门禁补 test/heal 两段断言；留档 App Center 手装分类根因（#140/#155）` | 5 文件 +153/−8 |
-| （本发布提交） | 2026-09-10 | `chore(release): bump version to 0.2.17 并撰写 CHANGELOG-0.2.17` | 8 文件（含本文）版本承载点一致 bump |
+| `91bf9b8` | 2026-09-10 | `chore(release): bump version to 0.2.17 并撰写 CHANGELOG-0.2.17`（tag `v0.2.17` → CI 测试门禁失败，fix-forward 烧号，见 §3.4） | 8 文件（含本文初稿）版本承载点一致 bump |
+| （本发布提交） | 2026-09-11 | `chore(release): bump version to 0.2.18 + 修复 test 平台可移植性（scanner.normalize A2，#156）` | test 修复 + 7 承载点 0.2.17→0.2.18 + 本文改名 |
 
-本批工作分三条主线：**A. 网关字段 heal 运维脚本与 runbook 正式入库**（§二）、**B. CI 发布门禁增强——单元测试作业 + heal 脚本机械化断言**（§三）、**C. App Center 手装应用分类/版本不显示的根因留档**（§四）；另有 `fpk/cmd/_common` 的 `/husr` 同源修正（§五）。
+本批工作分三条主线：**A. 网关字段 heal 运维脚本与 runbook 正式入库**（§二）、**B. CI 发布门禁增强——单元测试作业 + heal 脚本机械化断言**（§三）、**C. App Center 手装应用分类/版本不显示的根因留档**（§四）；另有 `fpk/cmd/_common` 的 `/husr` 同源修正（§五）。本版发布提交另含 B 线直接引出的一处 **test 平台可移植性修复**（§3.4，#156）。
 
 ---
 
@@ -90,6 +102,16 @@ heal 段不依赖 `VERSION` / `node_modules` / `docker`，故排在作业链**�
 3. **HEAL_REDLINE**：530 红线关键字在位（`530` / `trim_http_cgi` / `禁止】重启网关进程` / `必须人工确认` / `恢复需`），字面取自 heal 脚本现行文案；
 4. **HEAL_DANGER**：`reboot`/`restart` 命中行必须带「禁止」标记（注释或 heredoc 提示文案），其余命中一律视为真实重启动作违规——**heal 脚本只允许提示、绝不允许执行**。
 
+### 3.4 门禁首次上线即拦截的 test 平台可移植性缺陷（#156，本版发布提交修复）
+
+B 线把 `npm test` 首次纳入 CI（#140）后，tag `v0.2.17` 触发的 run 立即在 Linux runner 上暴露一个**既有测试的平台假设缺陷**——这正是门禁前移的价值：过去只在 macOS 本地手跑，缺陷被平台的符号链接特性掩盖。
+
+- **失败用例**：`server/test/scanner.normalize.test.ts` A2「保留值为 realpath 规范化形态」。该用例属 v0.2.16/#135 批次的既有回归（固化 #129 的 M3 扫描根规范化验证），非本版新写。
+- **根因**：A2 用 `assert.notEqual(realpath 形态, 字面路径)` 作**前提守卫**，证明 fixture 路径确实经过符号链接（否则「realpath 改写字面路径」的断言无证明力）。fixture 根取自 `os.tmpdir()`：macOS 的 `/var/folders/...` 经 `/var→/private/var` 符号链接，字面≠realpath，守卫成立；而 **Linux runner 的 `/tmp` 是真实目录**，字面==realpath，守卫**假失败**（`ERR_ASSERTION`，expected 与 actual 字面相同）。
+- **非产品缺陷**：被测的 `normalizeScanRoots()` 行为完全正确；失败纯粹是**测试脚手架**对平台 tmpdir 的错误假设。CI 结果 pass 91 / fail 1 / skip 8（skip 8 为 dev:ino 跨视角用例在 Linux 的诚实跳过，属既有设计）。
+- **修复（test-only）**：A2 不再依赖平台 tmpdir，改为测试**自建符号链接** `a2-link → roots`，用经该链接的字面路径喂入 `normalizeScanRoots()`——前提「字面经符号链接」在**所有平台恒成立**，且保留断言证明力（仍验证 realpath 规范化会改写符号链接字面路径）。本地在「默认 macOS tmpdir」与「TMPDIR 指向非符号链接真实目录（复现 Linux）」两种条件下，全量套件均 **100 / 100 pass、0 fail**。
+- **归因**：该用例是 #135 既有测试，因 #140 首次纳入 CI 才暴露；本次修复挂 **#156**。修复不改任何 `server/src` 产品代码，对镜像与 `.fpk` 运行时行为零影响。
+
 ---
 
 ## 四、C 线：App Center 手装应用分类/版本不显示的根因留档（`61aeaf6`，#155）
@@ -126,17 +148,17 @@ v0.2.16 真机观察（#151 只读复测坐实）：飞牛 App Center「已安�
 
 ## 六、明确没有做的事
 
-- **未改任何应用功能代码**：本版无 `server/src` 功能逻辑改动，应用行为、接口契约、曲库逻辑与 v0.2.16 完全一致；发布提交仅 bump 版本承载常量。
+- **未改任何应用功能代码**：本版无 `server/src` 功能逻辑改动，应用行为、接口契约、曲库逻辑与 v0.2.16 完全一致；发布提交仅 bump 版本承载常量，另含一处 **test-only** 可移植性修复（`server/test/`，§3.4），不属产品代码、不影响运行时。
 - **未做字面 #88 根治**：Track B（转 native_app）/ Track C（文件开放 API）属架构级重写，独立立项（沿用 v0.2.16 §八口径）。
 - **未往 manifest 注入活跃 `tags`/`category` 键**：解析器已实证忽略该键，且本机无 Docker 无法实机验证未知键行为，仅以注释留档（§四）。
 - **heal 脚本不执行任何重启类动作**：脚本只在注释 / heredoc 提示文案中出现 `reboot`/`restart`（带「禁止」标记），绝不真实重启网关进程 / 隧道 / NAS；此约束由 verify-ci heal 段的 HEAL_DANGER 断言卡死（§3.3）。
-- **本版发布提交撰写时点未预断 CI 成功**：CI 产物终态以本次发布执行的 `ci-poll` 与 Release 页为准，不在本文预写「已产出」。
+- **本文不预断 v0.2.18 CI 成功**：v0.2.17 的 CI 已如实记为 failure（§3.4）；v0.2.18 的 CI 产物终态以本次发布执行的 `ci-poll` 与 Release 页为准，不在本文预写「已产出」。
 
 ---
 
 ## 七、已知盲区与遗留
 
-1. **workflow 新增 test job 的真实 Actions 执行**：本地门禁 test 段已跑满 100/100，但 build.yml 新增 test job 在 GitHub Actions 上的真实执行随本次 tag 触发首次观测。
+1. **workflow test job 的真实 Actions 执行已首次观测**：tag `v0.2.17` 的 run 已实证 test job 在 Linux runner 上运行并**拦截**了 §3.4 的平台可移植性缺陷（conclusion=failure）；修复后 `v0.2.18` 的 test job 预期 pass 92 / skip 8 / fail 0（skip 8 为 dev:ino 跨视角用例在 Linux 的诚实跳过），终态以 `ci-poll` 为准。
 2. **manifest 未知键行为**：因本机无 Docker 未实机验证，故本版刻意不注入活跃 `tags` 键；待飞牛支持 manifest 声明分类或 Rainbow 走商店上架时再启用（见 `fpk/manifest` 注释与 `docs/FNOS-DEPLOY.md` #155 章）。
 3. **网关 heal 的真机执行**：heal 脚本已在 root 语境 dry-run 复验（列探测恢复、退出码与结论口径未变），但真实补写（heal 写路径）与「等 sacentry 周期后网关前缀转 302」的端到端闭环留待 NAS 侧运维按 runbook 执行——**不在本仓库发布链范围**。
 4. **服务端修复的真机验证 / digest pin**：沿用 v0.2.16 §八遗留（M3 代码级去重、loadConfig 深合并的真机端到端验证、`tag@digest` 真机拉取），随后续真机升级复验覆盖。
@@ -158,4 +180,4 @@ v0.2.16 真机观察（#151 只读复测坐实）：飞牛 App Center「已安�
 | 8 | 0 | `fpk/manifest` |
 | 1 | 0 | `docs/DEVELOPMENT.md` |
 
-> 发布 bump 提交另改 7 个版本承载点（`server/package.json`、`fpk/manifest` version= 与 changelog=、`server/src/routes/status.ts`、`server/src/core/adapters/scrape-detail.ts`、`API.md` status 示例、`scripts/verify-image.sh` 默认镜像 tag、`docs/FNOS-DEPLOY.md` 标题）并新增本文（`docs/CHANGELOG-0.2.17.md`）。历史归档中的「自 v0.2.16 起」等特性引入标记与真机验证记录按事实保持 `0.2.16` 不动。
+> 发布 bump 提交（`91bf9b8` 初版 0.2.17 → 本版 0.2.18）另改 7 个版本承载点（`server/package.json`、`fpk/manifest` version=、`server/src/routes/status.ts`、`server/src/core/adapters/scrape-detail.ts`、`API.md` status 示例、`scripts/verify-image.sh` 默认镜像 tag、`docs/FNOS-DEPLOY.md` 标题），并新增本文（由 `docs/CHANGELOG-0.2.17.md` 改名为 `docs/CHANGELOG-0.2.18.md`，v0.2.17 从未产 Release 故不保留其独立 changelog）；本版发布提交另含 test-only 修复 `server/test/scanner.normalize.test.ts`（§3.4，#156）。历史归档中的「自 v0.2.16 起」等特性引入标记与真机验证记录按事实保持 `0.2.16` 不动。

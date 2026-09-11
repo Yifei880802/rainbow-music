@@ -75,11 +75,16 @@ test('A1 两个独立目录均保留、无丢弃', () => {
 })
 
 test('A2 保留值为 realpath 规范化形态（字面路径经符号链接时被改写）', () => {
-  // 传字面路径（macOS 上 /var/folders/... 含符号链接段），期望拿回 /private/var/... 形态
-  const literal = path.join(SANDBOX_ROOT, 'roots', 'alpha')
+  // 前提「字面路径经符号链接」必须由测试自建符号链接保证，不能依赖平台 tmpdir：
+  // macOS 的 os.tmpdir()（/var/folders/...）经 /var→/private/var 符号链接，字面≠realpath；
+  // 但 Linux CI 的 /tmp 是真实目录，字面==realpath，旧写法的前提断言会假失败（#156）。
+  // 这里显式建 a2-link → roots，用经该符号链接的字面路径喂入，前提在所有平台恒成立。
+  const a2Link = path.join(SANDBOX_ROOT, 'a2-link')
+  if (!fs.existsSync(a2Link)) fs.symlinkSync(ROOTS, a2Link)
+  const literal = path.join(a2Link, 'alpha') // 经符号链接段的字面路径
   const r = normalizeScanRoots([literal])
-  assert.equal(r.roots[0], rAlpha)
-  assert.notEqual(rAlpha, literal, '本用例前提：fixture 路径确实经过符号链接，否则断言无证明力')
+  assert.equal(r.roots[0], rAlpha) // 规范化后应回落到 realpath 形态
+  assert.notEqual(literal, rAlpha, '本用例前提：fixture 路径确实经过符号链接，否则断言无证明力')
 })
 
 test('A3 多根保留顺序与输入顺序一致（保序契约）', () => {
