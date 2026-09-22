@@ -2,7 +2,7 @@
 #
 # verify-ci.sh —— Rainbow 发布前本地 CI 门禁（一键复跑 .github/workflows/build.yml 前四段）
 #
-# 作业链：heal → meta → build → test → docker → fpk（release 为 GitHub 侧动作，不在本地复跑）
+# 作业链：heal → meta → build → test → isolation → docker → fpk（release 为 GitHub 侧动作，不在本地复跑）
 #   heal  ：本地新增断言段（workflow 无对应 job）——scripts/fnos-gateway-heal.sh 包级
 #           断言：bash -n 语法门禁、退出码口径契约（--help=0 / 未知参数=1 / 非 root
 #           --dry-run=4）、530 红线关键字在位（不重启 trim_http_cgi 的红线标记）、
@@ -11,6 +11,14 @@
 #   b. build  ：cd server && npm ci（仅 node_modules 缺失时）&& npm run typecheck && npm run build
 #   c. test   ：cd server && npm test（Node 内置 test runner，可 --skip-test 跳过）
 #               对应 workflow 的 test job；任一用例失败 → 该段 FAIL、门禁不通过
+#   c2. isolation：本地新增断言段（workflow 无对应 job，v0.2.20 新增）——把「测试沙箱是否
+#               真的生效」机械化，防 v0.2.19 CI 失败根因回归：未使用的具名 import 被
+#               esbuild/tsx 整行 elide → env-sandbox 未执行 → 测试落到真机 data/ro.db。
+#               ① SANDBOX_ELISION：对每个源里 import 了 fixtures/env-sandbox 的
+#                  server/test/*.test.ts，跑 esbuild --format=esm 转译后该 import 行必须仍在
+#               ② DB_CANARY：test 段跑完后仓库 data/ro.db 的 sha256 必须与跑前逐字符一致，
+#                  且不得新增 ro.db-wal / ro.db-shm（原本不存在时不得被创建）
+#               依赖缺失（无 esbuild / 无 sha256 工具）或有进程正持有真机库时降级 SKIP，不误红
 #   d. docker ：docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .（可 --skip-docker 跳过）
 #   e. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST 调
 #               scripts/build-fpk.sh，解包产物并程序化校验 compose 内 image 与预期引用
@@ -87,7 +95,7 @@ trap cleanup EXIT INT TERM
 
 # ─────────────────────────── 参数解析 ───────────────────────────
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; }
 
 SKIP_DOCKER=0
 SKIP_TEST=0
@@ -257,6 +265,162 @@ stage_test() {
         npm test || { log "错误：npm test 失败（任一用例失败即门禁不通过）"; return 1; }
     ) || return 1
     return 0
+}
+
+# ─────────────────────────── c2. isolation ───────────────────────────
+# 本地新增段（workflow 无对应 job，v0.2.20 新增）：把「测试沙箱是否真的生效」机械化。
+#
+# 背景（v0.2.19 CI 失败根因，run 35726769721，单元测试 job）：
+# server/test/download-196-fix.test.ts 曾写成 `import { SANDBOX_ROOT } from './fixtures/env-sandbox.js'`
+# 却全文件未使用 SANDBOX_ROOT。TS 语义下「未使用的具名 import」可能是类型，esbuild/tsx 转译时
+# 会把**整条 import 语句删掉**（elision），env-sandbox 于是永不执行 → RO_CONFIG / RO_DB_DIR /
+# RO_LOG_LEVEL 全未设 → initDb() 回退打开**真机仓库 data/ro.db**。本地真机库有 141 条真实任务
+# → `total > 0` 类断言假绿；CI runner 上 data/*.db 被 .gitignore 排除、库是空的 → total=0 真败。
+# 详见 docs/CHANGELOG-0.2.20.md。
+#
+# 两段护栏互为编译期/运行期双证据：
+#   ① SANDBOX_ELISION —— 源里 import 了沙箱的文件，esbuild 转译产物必须仍含该 import 行
+#   ② DB_CANARY       —— test 段跑完后真机 data/ro.db 必须字节未变、无 -wal/-shm 新增
+
+sha256_of() { # sha256_of <file> → 64 位小写 hex（GNU sha256sum / BSD shasum 双兼容）
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | awk '{print $1}'
+    else
+        printf 'NO_SHA_TOOL\n'
+    fi
+}
+
+# DB_CANARY 基线：由 isolation_snapshot 在 test 段**之前**填充，stage_isolation 在其后比对
+CANARY_DB=""
+CANARY_DB_EXISTS=0
+CANARY_DB_HASH=""
+CANARY_WAL_EXISTS=0
+CANARY_SHM_EXISTS=0
+CANARY_TAKEN=0
+CANARY_SKIP_REASON=""
+
+isolation_snapshot() { # 恒定返回 0：快照取不到只降级为 SKIP，绝不中断门禁
+    CANARY_DB="$REPO_ROOT/data/ro.db"
+
+    # 防误红①：有进程正持有真机库（开发者本地跑着 rainbow 服务）→ 它会被合法写入，放弃 canary
+    if command -v lsof >/dev/null 2>&1; then
+        local holders=""
+        holders="$(lsof -t -- "$CANARY_DB" 2>/dev/null | tr '\n' ' ' || true)"
+        if [[ -n "${holders// /}" ]]; then
+            CANARY_SKIP_REASON="有进程正持有 data/ro.db（pid: ${holders}），真机库会被其合法写入"
+            return 0
+        fi
+    fi
+
+    # 防误红②：无可用 sha256 工具，做不了字节级比对
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        CANARY_SKIP_REASON="系统既无 sha256sum 也无 shasum，无法做字节级 canary"
+        return 0
+    fi
+
+    if [[ -f "$CANARY_DB" ]]; then
+        CANARY_DB_EXISTS=1
+        CANARY_DB_HASH="$(sha256_of "$CANARY_DB")"
+    fi
+    if [[ -f "${CANARY_DB}-wal" ]]; then CANARY_WAL_EXISTS=1; fi
+    if [[ -f "${CANARY_DB}-shm" ]]; then CANARY_SHM_EXISTS=1; fi
+    CANARY_TAKEN=1
+    log "DB_CANARY 基线快照：ro.db exists=${CANARY_DB_EXISTS} sha256=${CANARY_DB_HASH:-<文件不存在>} wal=${CANARY_WAL_EXISTS} shm=${CANARY_SHM_EXISTS}"
+    return 0
+}
+
+stage_isolation() {
+    local esbuild="$REPO_ROOT/server/node_modules/.bin/esbuild"
+    # 源文件判定模式与转译产物判定模式**同形**：以 import 开头且路径含 fixtures/env-sandbox。
+    # 同形是关键——「源里怎么写的，转译后就该还在」，不依赖 esbuild 的注释处理行为。
+    local pat='^[[:space:]]*import[[:space:]].*fixtures/env-sandbox'
+    local f rel out esb_rc checked=0 elided=0 unverifiable=0 db_fail=0 rc_iso=0
+    local now_exists now_hash
+
+    # ── ① SANDBOX_ELISION：编译期护栏 ─────────────────────────────────────
+    if [[ ! -x "$esbuild" ]]; then
+        log "${C_YELLOW}SANDBOX_ELISION_SKIP：未找到可执行的 server/node_modules/.bin/esbuild（先 npm ci）${C_NC}"
+    elif [[ ! -d "$REPO_ROOT/server/test" ]]; then
+        log "${C_YELLOW}SANDBOX_ELISION_SKIP：未找到 server/test 目录${C_NC}"
+    else
+        for f in "$REPO_ROOT"/server/test/*.test.ts; do
+            [[ -f "$f" ]] || continue
+            # 并非所有 test 文件都用沙箱：只查「源里真的 import 了 env-sandbox」的，避免误红
+            grep -Eq "$pat" "$f" || continue
+            checked=$((checked+1))
+            rel="${f#"$REPO_ROOT"/}"
+            out=""; esb_rc=0
+            out="$("$esbuild" --format=esm "$f" 2>/dev/null)" || esb_rc=$?
+            if [[ $esb_rc -ne 0 ]]; then
+                # esbuild 自身转译失败 → 给不出结论，记为不可验证（语法问题由 test 段的 tsx 另行暴露）
+                unverifiable=$((unverifiable+1))
+                log "${C_YELLOW}ISOLATION_UNVERIFIABLE：${rel}（esbuild rc=${esb_rc}，无法判定 elision）${C_NC}"
+                continue
+            fi
+            if printf '%s\n' "$out" | grep -Eq "$pat"; then
+                log "  ✓ ${rel}：沙箱 import 在 esbuild 转译产物中保留"
+            else
+                elided=$((elided+1))
+                log "${C_RED}${C_BOLD}SANDBOX_ELISION_FAIL${C_NC}：${rel} 源文件 import 了 fixtures/env-sandbox，但 esbuild 转译产物中该 import 已被整行删除（elide）"
+                log "    后果：env-sandbox 不执行 → RO_CONFIG/RO_DB_DIR/RO_LOG_LEVEL 全未设 → 测试读写真机 data/ro.db"
+                log "    修法：改为裸副作用 import —— import './fixtures/env-sandbox.js'（对齐 download-m1.test.ts）"
+            fi
+        done
+        if [[ $checked -eq 0 ]]; then
+            log "${C_YELLOW}SANDBOX_ELISION_SKIP：server/test/*.test.ts 中没有任何文件 import fixtures/env-sandbox${C_NC}"
+        elif [[ $elided -gt 0 ]]; then
+            log "${C_RED}${C_BOLD}SANDBOX_ELISION_FAIL${C_NC}：${elided}/${checked} 个沙箱测试文件的 env-sandbox import 被 elide"
+            rc_iso=1
+        else
+            log "${C_GREEN}${C_BOLD}SANDBOX_ELISION_PASS${C_NC}：${checked} 个沙箱测试文件的 env-sandbox import 在 esbuild 转译产物中全部保留（不可验证 ${unverifiable} 个）"
+        fi
+    fi
+
+    # ── ② DB_CANARY：运行期护栏 ──────────────────────────────────────────
+    if [[ -n "$CANARY_SKIP_REASON" ]]; then
+        log "${C_YELLOW}DB_CANARY_SKIP：${CANARY_SKIP_REASON}${C_NC}"
+    elif [[ "$CANARY_TAKEN" -ne 1 ]]; then
+        log "${C_YELLOW}DB_CANARY_SKIP：未取得基线快照${C_NC}"
+    elif [[ "$SKIP_TEST" -eq 1 ]]; then
+        log "${C_YELLOW}DB_CANARY_SKIP：--skip-test 已指定，test 段未跑，canary 无从比对${C_NC}"
+    else
+        now_exists=0; now_hash=""
+        if [[ -f "$CANARY_DB" ]]; then now_exists=1; now_hash="$(sha256_of "$CANARY_DB")"; fi
+
+        if [[ "$CANARY_DB_EXISTS" -eq 0 && "$now_exists" -eq 1 ]]; then
+            log "${C_RED}${C_BOLD}DB_CANARY_FAIL${C_NC}：test 段跑前 data/ro.db 不存在、跑后被创建 → 有测试绕过沙箱写了真机库"
+            db_fail=1
+        elif [[ "$CANARY_DB_EXISTS" -eq 1 && "$now_exists" -eq 0 ]]; then
+            log "${C_RED}${C_BOLD}DB_CANARY_FAIL${C_NC}：test 段跑后 data/ro.db 消失 → 有测试删了真机库"
+            db_fail=1
+        elif [[ "$CANARY_DB_EXISTS" -eq 1 && "$now_hash" != "$CANARY_DB_HASH" ]]; then
+            log "${C_RED}${C_BOLD}DB_CANARY_FAIL${C_NC}：data/ro.db 被 test 段改动（v0.2.19 CI 失败根因的运行期症状）"
+            log "    跑前 sha256=${CANARY_DB_HASH}"
+            log "    跑后 sha256=${now_hash}"
+            log "    定位：结合上面 SANDBOX_ELISION 结果找出未走沙箱的测试文件"
+            db_fail=1
+        fi
+
+        # 即使 ro.db 本体字节未变，新增 -wal/-shm 也说明有连接开到了真机库
+        if [[ "$CANARY_WAL_EXISTS" -eq 0 && -f "${CANARY_DB}-wal" ]]; then
+            log "${C_RED}${C_BOLD}DB_CANARY_FAIL${C_NC}：test 段跑后新增 data/ro.db-wal → 有测试把连接开到了真机库"
+            db_fail=1
+        fi
+        if [[ "$CANARY_SHM_EXISTS" -eq 0 && -f "${CANARY_DB}-shm" ]]; then
+            log "${C_RED}${C_BOLD}DB_CANARY_FAIL${C_NC}：test 段跑后新增 data/ro.db-shm → 有测试把连接开到了真机库"
+            db_fail=1
+        fi
+
+        if [[ $db_fail -eq 0 ]]; then
+            log "${C_GREEN}${C_BOLD}DB_CANARY_PASS${C_NC}：test 段跑完，真机 data/ro.db 字节未变（sha256=${CANARY_DB_HASH:-<原本不存在>}），无 -wal/-shm 新增"
+        else
+            rc_iso=1
+        fi
+    fi
+
+    return $rc_iso
 }
 
 # ─────────────────────────── d. docker ───────────────────────────
@@ -536,7 +700,7 @@ run_stage() { # run_stage <name> <fn>
     LAST_RESULT="${STAGE_RESULTS[${#STAGE_RESULTS[@]}-1]}"
 }
 
-log "Rainbow 本地 CI 门禁启动：作业链 heal → meta → build → test → docker → fpk"
+log "Rainbow 本地 CI 门禁启动：作业链 heal → meta → build → test → isolation → docker → fpk"
 
 # heal 段不依赖 VERSION / node_modules，最先跑：秒级完成，坏了立刻暴露
 run_stage "heal"   stage_heal
@@ -545,7 +709,10 @@ run_stage "meta"   stage_meta
 # meta 失败则 VERSION/IMAGE_TAG 未就绪，后续段无意义，直接汇总退出
 if [[ "$LAST_RESULT" != "FAIL" ]]; then
     run_stage "build"  stage_build
+    # DB_CANARY 基线必须在 test 段**之前**快照，否则无从判断真机库有没有被测试动过
+    isolation_snapshot
     run_stage "test"   stage_test
+    run_stage "isolation" stage_isolation
     run_stage "docker" stage_docker
     run_stage "fpk"    stage_fpk
 fi
