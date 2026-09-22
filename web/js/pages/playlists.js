@@ -18,24 +18,21 @@
  * ≤900px 触屏隐藏手柄（触屏拖拽后续迭代）。
  */
 import { $, $$, escapeHtml, toast, PLATFORM_NAME, confirmModal } from '../ui.js'
-import { api, API_BASE } from '../api.js'
+import { api, API_BASE, getDownloadQuality } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
-
-const isDone = (t) => t.status === 'completed' || t.status === 'completed_with_warnings'
+import {
+  isDone,
+  isBusy,
+  mergeOwned,
+  reconcileOwned,
+  stateButtonHtml,
+  updateRingProgress,
+  subscribeTaskEvents,
+} from '../download-state.js'
 
 // ---------- #69 详情行三态（owned map / SSE 联动 / 直接播放；与 home.js 同构） ----------
-/** 任务进行态（下载中：环脉冲） */
-const isBusy = (t) => !!t && (t.status === 'pending' || t.status === 'active')
-/** 行状态代表任务优先级：done > busy > failed/canceled（同档取 updatedAt 新） */
-const PL_STATUS_RANK = { completed: 3, completed_with_warnings: 3, active: 2, pending: 2, failed: 1, canceled: 0 }
-/** 28px 进度环 r=9 周长（2πr≈56.55，同 home.js HP_RING_LEN） */
-const PL_RING_LEN = 56.55
-/** SSE task 事件清单（负载=完整任务视图，sse.js EVENT_NAMES 同源子集） */
-const PL_TASK_EVENTS = [
-  'task:created', 'task:pending', 'task:active', 'task:completed',
-  'task:completed_with_warnings', 'task:failed', 'task:canceled',
-]
+// isDone / isBusy / PL_STATUS_RANK / PL_RING_LEN / PL_TASK_EVENTS 已收敛至 download-state.js（P0-A1）
 
 /** 歌单项匹配键（platform:songmid，与任务视图对齐） */
 const plItemKey = (it) => `${it.platform}:${it.musicInfo?.songmid}`
@@ -44,21 +41,8 @@ const plItemKey = (it) => `${it.platform}:${it.musicInfo?.songmid}`
 let plOwned = new Map()
 let plItems = []
 
-/** 代表任务合并入 map（新视图优先于旧值，同曲多任务保留最高优先级） */
-function plMerge(map, view) {
-  if (!view || !view.id || !view.platform || !view.songmid) return
-  const key = `${view.platform}:${view.songmid}`
-  const prev = map.get(key)
-  if (!prev) {
-    map.set(key, view)
-    return
-  }
-  const pr = PL_STATUS_RANK[prev.status] ?? 0
-  const nr = PL_STATUS_RANK[view.status] ?? 0
-  if (nr > pr || (nr === pr && (view.updatedAt || 0) >= (prev.updatedAt || 0))) map.set(key, view)
-}
-
-const plUpsert = (view) => plMerge(plOwned, view)
+/** 代表任务合并入 map（委托公共模块 mergeOwned） */
+const plUpsert = (view) => mergeOwned(plOwned, view)
 
 /** 详情可见守卫（歌单页激活且详情面板展开；离开视图零开销） */
 function plViewActive() {
@@ -84,7 +68,7 @@ export function init() {
     if (!dragRow) resetDraggable()
   })
   // #69 SSE 联动（init 一次性注册 + plViewActive 守卫，全局单连接复用 library.js 范式无泄漏）
-  for (const ev of PL_TASK_EVENTS) sse.on(ev, onPlTaskEvent)
+  subscribeTaskEvents(sse, onPlTaskEvent)
   sse.on('task:progress', onPlTaskProgress)
   sse.on('connected', onPlSseConnected)
   document.addEventListener('player:trackchange', (e) => highlightPlNowPlaying(e.detail?.taskId ?? null))
@@ -184,7 +168,7 @@ async function onCardAction(e) {
     if (btn.dataset.open !== undefined) {
       openPlaylist(id)
     } else if (btn.dataset.dl !== undefined) {
-      const r = await api.playlists.download(id, { quality: $('#quality').value })
+      const r = await api.playlists.download(id, { quality: getDownloadQuality() })
       toast(`已提交 ${r.acceptedCount} 首`)
     } else if (btn.dataset.del !== undefined) {
       if (!(await confirmModal('确认删除该歌单？其中的歌曲记录一并删除。', { danger: true, okLabel: '删除' }))) return
@@ -197,19 +181,8 @@ async function onCardAction(e) {
   }
 }
 
-/** 任务映射（platform:songmid → 代表任务视图；#69 由 key→taskId 升级为
- * 全量状态——拼贴/封面处自行过滤 isDone，详情行三态用完整视图；
- * 拿不到任务列表时返回空 Map，仅失去拼贴/置灰/三态，行为回退全可下载） */
-async function ownedTaskMap() {
-  try {
-    const r = await api.tasks.list()
-    const m = new Map()
-    for (const t of r.tasks || []) plMerge(m, t)
-    return m
-  } catch {
-    return new Map()
-  }
-}
+/** 任务映射（platform:songmid → 代表任务视图；委托公共模块 reconcileOwned，P0-A1 收敛） */
+const ownedTaskMap = () => reconcileOwned()
 
 async function openPlaylist(id) {
   try {
@@ -282,7 +255,7 @@ async function onDetailAction(e) {
         const payload = JSON.parse(decodeURIComponent(btn.dataset.song))
         btn.disabled = true
         try {
-          const r = await api.download.batch({ items: [payload], quality: $('#quality').value })
+          const r = await api.download.batch({ items: [payload], quality: getDownloadQuality() })
           if (r.acceptedCount) {
             const tid = r.accepted?.[0]?.id
             const key = `${payload.platform}:${payload.musicInfo?.songmid}`
@@ -337,18 +310,10 @@ async function onDetailAction(e) {
    #69 · 详情行三态控件 + SSE 联动 + 直接播放（与 home.js 同构的表格行版）
    ============================================================ */
 
-/** 行状态位控件：未下载=下载钮 / 下载中=进度环脉冲 / 已下载=绿勾 hover 播放三角 */
+/** 行状态位控件（委托公共模块 stateButtonHtml，P0-A1 收敛） */
 function plStateBtn(it, t) {
-  if (isDone(t)) {
-    return `<button class="row-dl done" data-play="${escapeHtml(String(t.id))}" type="button" aria-label="播放已下载的 ${escapeHtml(it.name)}" title="已下载到本地 · 点击播放"><svg class="ic-ok" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6.5l2.6 2.6L10 3.5"/></svg><svg class="ic-go" viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z"/></svg></button>`
-  }
-  if (isBusy(t)) {
-    const pct = t.progress || 0
-    return `<button class="row-dl hp-dl-ing" data-task="${escapeHtml(String(t.id))}" type="button" disabled title="下载中 ${pct}%"><svg class="hp-ring" viewBox="0 0 28 28" width="16" height="16" aria-hidden="true"><circle class="hp-ring-track" cx="14" cy="14" r="9" /><circle class="hp-ring-fill" cx="14" cy="14" r="9" style="stroke-dasharray:${PL_RING_LEN};stroke-dashoffset:${(PL_RING_LEN * (1 - pct / 100)).toFixed(2)}" /></svg></button>`
-  }
-  const failed = t && (t.status === 'failed' || t.status === 'canceled')
   const payload = encodeURIComponent(JSON.stringify({ platform: it.platform, musicInfo: it.musicInfo }))
-  return `<button class="row-dl" data-song="${escapeHtml(payload)}" type="button" aria-label="下载 ${escapeHtml(it.name)}" title="${failed ? '上次下载未完成，点击重试' : '下载这首'}"><svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5v7M3 6l3 3 3-3M2 10.5h8"/></svg></button>`
+  return stateButtonHtml({ task: t, name: it.name, dlAttr: 'data-song', dlValue: payload })
 }
 
 /** SSE 事件局部更新：只替换操作列状态钮 + 行 title（不重建表格行） */
@@ -388,10 +353,7 @@ function onPlTaskProgress(p) {
     }
   }
   const btn = document.querySelector(`#playlist-detail [data-task="${CSS.escape(p.id)}"]`)
-  if (!btn) return
-  const fill = btn.querySelector('.hp-ring-fill')
-  if (fill) fill.style.strokeDashoffset = (PL_RING_LEN * (1 - (p.percent || 0) / 100)).toFixed(2)
-  btn.title = `下载中 ${p.percent || 0}%`
+  updateRingProgress(btn, p.percent || 0)
 }
 
 /** SSE 重连成功（服务端约定 connected → 全量对账）：详情态重拉任务快照刷新全行 */

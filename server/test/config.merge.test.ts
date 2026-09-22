@@ -61,13 +61,40 @@ download:
   embedCover: true
   embedLyric: true
   coverSize: 500
+  onConflict: suffix
+  verifyIntegrity: true
+  detectRealQuality: true
+  dirTemplate: ""
+  dedupePolicy: skip
+  batchMaxItems: 200
+  resume: true
+  diskPrecheck: true
+  minFreeBytes: 104857600
 sources:
   dir: data/sources
   hotReload: true
+  healthAware: true
+  circuitThreshold: 5
+  circuitWindowMs: 300000
+  ratePerMin: 0
 rateLimit:
   enabled: true
   windowMs: 60000
   max: 300
+search:
+  timeoutMs: 8000
+  cacheTtlMs: 300000
+  defaultLimit: 30
+  platformWeights:
+    kw: 1
+    kg: 1
+    tx: 1.1
+    wy: 1
+    mg: 0.9
+  suggestPlatforms: [wy, tx, kg]
+  correctEnabled: true
+  correctMinResults: 3
+  relatedEnabled: true
 scrape:
   enabled: true
   autoOnComplete: true
@@ -512,20 +539,20 @@ test('s7 PATCH 返回 200，落盘确实发生（yamlAfter 与 yamlBefore 不同
   assert.notEqual(out.yamlAfter, out.yamlBefore)
 })
 
-test('s7 固化取证：落盘后顶层块由 3 个增至 8 个（用户从未写过的字段被写成显式默认值）', () => {
+test('s7 固化取证：落盘后顶层块由 3 个增至 9 个（用户从未写过的字段被写成显式默认值）', () => {
   const out = must('s7')
   const before = Object.keys(YAML.parse(out.yamlBefore as string) as object).sort()
   const after = Object.keys(out.parsedAfter as object).sort()
   assert.deepEqual(before, ['download', 'server', 'smokeTest'])
-  assert.deepEqual(after, ['auth', 'download', 'log', 'rateLimit', 'scrape', 'server', 'smokeTest', 'sources'])
+  assert.deepEqual(after, ['auth', 'download', 'log', 'rateLimit', 'scrape', 'search', 'server', 'smokeTest', 'sources'])
   const added = after.filter((k) => !before.includes(k))
-  assert.deepEqual(added, ['auth', 'log', 'rateLimit', 'scrape', 'sources'], '新增固化块清单')
+  assert.deepEqual(added, ['auth', 'log', 'rateLimit', 'scrape', 'search', 'sources'], '新增固化块清单')
 })
 
 test('s7 固化值等于内置默认值（故将来改 buildDefaultConfig 对已 PATCH 用户失效——这是记录在案的代价）', () => {
   const out = must('s7')
   const after = out.parsedAfter as Record<string, unknown>
-  for (const block of ['auth', 'log', 'rateLimit', 'scrape', 'sources']) {
+  for (const block of ['auth', 'log', 'rateLimit', 'scrape', 'search', 'sources']) {
     assert.deepEqual(after[block], DEFAULTS[block], `固化块 ${block} 的值与内置默认值不一致`)
   }
 })
@@ -661,7 +688,7 @@ test('s10 完整配置 PATCH 后 password 仍为空串（真机模板写空串�
 
 // ── 跨场景不变量 ────────────────────────────────────────────────────────────
 
-test('全部场景：合并后 config 恒含 RoConfig 的 8 个顶层块（结构完整性总闸）', () => {
+test('全部场景：合并后 config 恒含 RoConfig 的 9 个顶层块（结构完整性总闸）', () => {
   const expected = Object.keys(DEFAULTS).sort()
   for (const sc of SCENARIOS) {
     const out = must(sc.name)

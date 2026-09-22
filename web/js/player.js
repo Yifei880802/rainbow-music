@@ -9,6 +9,8 @@
 import { $, toast, escapeHtml } from './ui.js'
 import { api, API_BASE } from './api.js'
 import { store } from './storage.js'
+// P2 O2：now-playing 收藏心形——与搜索行共用 favorites.js 单份状态（ref = platform:songmid）
+import { favCan, isFavored, toggleFavorite, loadFavorites, popOnce } from './favorites.js'
 
 let audio = null
 let bar = null
@@ -138,7 +140,11 @@ function fmt(sec) {
 
 /** 文件名回退解析：去掉扩展名后按「 - 」拆成 名字/歌手 */
 function fromFileName(filePath) {
-  const base = String(filePath || '').split('/').pop().replace(/\.[^.]+$/, '')
+  // #199 防御：/tasks/owned 轻量端点（#196-fix2）以 filePath:'yes' 占位「有文件」，
+  // 不是真实路径——若被回退解析会把曲名显示成 "yes"，这里直接视为无文件名
+  const raw = String(filePath || '')
+  if (!raw || raw === 'yes') return { name: '', singer: '' }
+  const base = raw.split('/').pop().replace(/\.[^.]+$/, '')
   const at = base.indexOf(' - ')
   if (at > 0) return { name: base.slice(0, at), singer: base.slice(at + 3) }
   return { name: base, singer: '' }
@@ -263,6 +269,7 @@ function loadAt(i, autoplay = true) {
   reportHistory(task) // v0.2.1 模块六：服务端播放历史上报（同 recent 时机，30s 节流防刷）
   syncCover(task)
   syncNp(task)
+  syncFav() // P2 O2：切曲同步收藏心形（实/空心 + NAS 曲禁用降级）
   syncProgress()
   syncNav()
   // v0.2.1 模块六：NAS 曲目携带自定义 stream 地址（library/tracks/:id/stream），
@@ -413,6 +420,45 @@ function syncNp(task) {
     els.npCover.src = task.coverUrl || `${API_BASE}/api/v1/cover/${encodeURIComponent(task.id)}`
   }
   renderNpQueue()
+}
+
+/* ============================================================
+   P2 O2 · now-playing 收藏到「我喜欢」
+   底部播放条 #pb-fav 与面板 #np-fav 共享同一份状态（favorites.js 内部 Set），
+   并与搜索结果行心形双向同步：本处 toggle 会广播 favorites:changed →
+   搜索页 syncHearts；反之搜索行 toggle 也会回到这里的 syncFav。
+   契约：GET/POST/DELETE /api/v1/me/favorites（kind='track'，ref=platform:songmid）
+   ============================================================ */
+
+/** 当前曲目（未在播放 → null） */
+function favTask() {
+  return index >= 0 && index < queue.length ? queue[index] : null
+}
+
+/** 心形同步：无 platform/songmid（NAS 扫描曲）时禁用降级，不伪造 ref。
+ *  @param {Event} [ev] favorites:changed 事件（仅 reason='toggle' 时播 pop 反馈） */
+function syncFav(ev) {
+  const pop = ev?.detail?.reason === 'toggle'
+  const task = favTask()
+  const can = favCan(task)
+  const on = can && isFavored(task.platform, task.songmid)
+  for (const btn of [els.fav, els.npFav]) {
+    if (!btn) continue
+    btn.disabled = !can
+    btn.classList.toggle('on', on)
+    btn.setAttribute('aria-pressed', String(on))
+    const label = can ? (on ? '取消收藏' : '收藏到「我喜欢」') : '本地扫描曲目暂不支持收藏'
+    btn.setAttribute('aria-label', label)
+    btn.title = can ? (on ? '已收藏 · 点击取消' : '收藏到「我喜欢」') : label
+    if (pop) popOnce(btn)
+  }
+}
+
+/** 点击心形 = 乐观 toggle（内部先翻本地集合并广播，落库失败自动回滚 + toast） */
+function onFavToggle() {
+  const task = favTask()
+  if (!favCan(task)) return
+  void toggleFavorite({ platform: task.platform, songmid: task.songmid, name: metaOf(task).name })
 }
 
 /** 面板开合（body.np-open 驱动 main 让位）；P0-7 开合记忆 localStorage */
@@ -1057,6 +1103,9 @@ export function init() {
     npNext: $('#np-next'),
     npIcPlay: $('#np-play .ic-play'),
     npIcPause: $('#np-play .ic-pause'),
+    // P2 O2：收藏心形（底部播放条 + np 面板封面右下角）
+    fav: $('#pb-fav'),
+    npFav: $('#np-fav'),
   }
 
   // P0-4：音量记忆恢复（localStorage `rainbow.volume`，缺省 0.8）
@@ -1151,6 +1200,14 @@ export function init() {
     })
   }
 
+  // P2 O2 增量挂载：now-playing 收藏心形（底条 + 面板双控件，共用一份状态）
+  if (els.fav) els.fav.addEventListener('click', onFavToggle)
+  if (els.npFav) els.npFav.addEventListener('click', onFavToggle)
+  // 搜索行心形 toggle / 快照到位 / 回滚 → 播放器侧跟着刷新
+  document.addEventListener('favorites:changed', syncFav)
+  void loadFavorites().then(() => syncFav())
+  syncFav()
+
   // P2 增量挂载：歌词 sidecar + 频谱 + tab 切换
   // 歌词拉取由既有 player:trackchange 事件驱动（loadAt/关闭时派发），切歌自动重拉
   document.addEventListener('player:trackchange', (e) => {
@@ -1224,6 +1281,7 @@ export function init() {
     renderNpQueue()
     syncToggleIcon()
     syncNav()
+    syncFav() // P2 O2：关闭后心形回到禁用态（无当前曲目）
     emitTrackChange()
     setOpen(false)
     document.title = 'Rainbow 音乐播放器'

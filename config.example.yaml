@@ -51,9 +51,46 @@ download:
                                  # 高于上限时内核 OOM kill 会先于护栏生效（护栏形同虚设）
   # batchActivationSize: 200     # 批量入队背压：内存中同时激活的任务上限，超量分批激活
   # tagWorkers: 2                # 元数据嵌入 worker 数，默认 clamp(floor(CPU/2), 1, 2)，上限 4
+  # ── P0 下载数据安全 + 真实音质回写（全部可选，注释中为默认值）──
+  # onConflict: suffix           # 同名文件冲突策略：suffix(追加 (1)(2)…) | overwrite(覆盖) | skip(跳过)
+  # verifyIntegrity: true        # 下载完整性校验：比对 received vs content-length，不一致记 warning
+  # detectRealQuality: true      # 下载完成后用 music-metadata 读取真实码率/编码/采样率
+  # ── P1 下载引擎强化（全部可选，注释中为默认值）──
+  # dirTemplate: ""              # 落盘子目录模板（G1）：''=平铺；支持 '{singer}/{album}'、
+  #                              # '{singerFirstLetter}/{singer}'；占位符同 nameTemplate，逐段消毒
+  # dedupePolicy: skip           # 入队去重策略（H5）：skip(命中复用既有任务) |
+  #                              # replace(取消在途重复项后新建) | always-new(永不去重)
+  # batchMaxItems: 200           # 批量入队单次上限（H1/H5）
+  # resume: true                 # 断点续传（F2）：失败/重启后按 Range 续下，临时名 .tmp-{taskId}
+  # ── P2 性能细项（N3，全部可选，注释中为默认值）──
+  # diskPrecheck: true           # 入队前磁盘空间预检：可用空间不足 minFreeBytes 时拒绝入队（HTTP 507 + ERR_DISK_FULL）
+  # minFreeBytes: 104857600      # 最小可用磁盘字节数，默认 100MB（104857600）
 sources:
   dir: data/sources
   hotReload: true
+  # ── P2 音源健康编排与限速（L1/L2/L3，全部可选，注释中为默认值）──
+  # healthAware: true            # L1: 按 smoke_results 近 N 次成功率对候选音源排序（全失败源降权）
+  # circuitThreshold: 5          # L2: 同一音源窗口内连续失败 ≥K 次即熔断临时剔除（避免每任务白跑 30s）
+  # circuitWindowMs: 300000      # L2: 熔断统计滑动窗口（ms），默认 5 分钟
+  # ratePerMin: 0                # L3: 每音源每分钟 callAction 上限（0=不限速），与全局 rateLimit 协同防打爆上游风控
+# ── P0 搜索基础设施（全部可选；未配置时代码侧用默认值）──
+# 控制聚合搜索的超时/内存缓存，以及联想(suggest)与热搜(trending)端点。
+search:
+  timeoutMs: 8000          # /search/aggregate 单次聚合整体超时（ms），超时平台进 errors 不阻塞其余
+  cacheTtlMs: 300000       # 聚合/联想结果服务端内存缓存 TTL（ms），默认 5 分钟
+  defaultLimit: 30         # 各平台搜索默认返回条数（统一 tx/mg 原 50/20 为 30）
+  # ── P1 搜索后端 J（#191，全部可选；注释中为默认值）──
+  # platformWeights:       # J2 本地相关度评分的平台权重（乘数，作用于文本/音质/时长得分）
+  #   kw: 1
+  #   kg: 1
+  #   tx: 1.1              # QQ 音乐曲库全、音质高，略加权
+  #   wy: 1
+  #   mg: 0.9              # 咪咕音质/匹配略弱，略降权
+  # suggestPlatforms: [wy, tx, kg]  # D2 联想标题池取榜平台（仅这几个榜的歌曲名进入联想候选）
+  # ── P2 搜索高阶 O4/O5（#200，全部可选；注释中为默认值）──
+  # correctEnabled: true     # O4 错字容错：聚合结果过少时返回纠错建议（不自动替换用户原词，仅供前端「已为你搜索 X」提示）
+  # correctMinResults: 3     # O4 触发阈值：聚合结果条数 < 此值时尝试编辑距离≤1 纠错（词典取历史成功搜索词）
+  # relatedEnabled: true     # O5 相关推荐：/search/related 基于搜索历史共现推荐「搜过 X 的人也搜 Y」；冷启动回退 trending
 # ── #45 自动刮削（全部可选；未配置时代码侧用默认值）──
 # 下载完成后自动回查平台详情（年份/曲目号/流派/碟号/专辑艺术家），
 # read-merge-write 只补缺不覆盖已嵌入的标签；失败只记内部状态、不影响下载。

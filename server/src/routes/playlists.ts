@@ -9,7 +9,8 @@
  *   POST   /api/v1/playlists/:id/items    添加歌曲 { platform, musicInfo }
  *   DELETE /api/v1/playlists/:id/items/:itemId  移除歌曲
  *   PUT    /api/v1/playlists/:id/items/order    重排曲目 { itemIds: [...] }（#57）
- *   POST   /api/v1/playlists/:id/download 整单批量下载 { quality? }
+ *   POST   /api/v1/playlists/:id/download 整单批量下载 { quality? }（H2: 返回 batchId）
+ *   POST   /api/v1/playlists/:id/download-missing 仅下未拥有项 { quality? }（H2）
  *
  * uid 口径：req.user.uid（网关用户隔离）；本地 admin 登录 = 'legacy' →
  * v0.2.0 存量歌单（user_id='legacy'）全部可见，本地模式行为不变。
@@ -17,6 +18,8 @@
 import type { FastifyInstance } from 'fastify'
 import { playlistStore } from '../core/db/playlists.js'
 import { downloadQueue } from '../core/download/queue.js'
+import { isDiskFullError, classifyError, errorToStatus } from '../core/download/errors.js'
+import { taskStore } from '../core/db/index.js'
 import { isPlatform, ALL_PLATFORMS } from '../core/search/index.js'
 import type { MusicInfo } from '../core/adapters/common.js'
 import type { Quality } from '../core/source-engine/lx-env.js'
@@ -161,20 +164,61 @@ export async function playlistRoutes(app: FastifyInstance): Promise<void> {
     return { id: req.params.id, reordered: true, count: itemIds.length }
   })
 
-  // 整单批量下载：把歌单里所有歌曲入队
+  // 整单批量下载：把歌单里所有歌曲入队（H1/H2：共享单一 batchId）
   app.post<{ Params: { id: string }; Body: { quality?: Quality } }>('/api/v1/playlists/:id/download', async (req, reply) => {
     if (!playlistStore.get(req.params.id, requestUid(req))) return reply.code(404).send({ error: 'playlist not found' })
     const quality = req.body?.quality ?? 'flac'
     if (!VALID_QUALITIES.includes(quality)) return reply.code(400).send({ error: 'invalid quality', valid: VALID_QUALITIES })
     const items = playlistStore.items(req.params.id)
     if (!items.length) return reply.code(400).send({ error: 'playlist is empty' })
-    const accepted: { id: string; name: string }[] = []
+    const inputs: { name: string; input: Parameters<typeof downloadQueue.enqueue>[0] }[] = []
     for (const it of items) {
-      const musicInfo = JSON.parse(it.music_info) as MusicInfo
       if (!isPlatform(it.platform)) continue
-      const id = downloadQueue.enqueue({ platform: it.platform, musicInfo, quality })
-      accepted.push({ id, name: it.name })
+      const musicInfo = JSON.parse(it.music_info) as MusicInfo
+      inputs.push({ name: it.name, input: { platform: it.platform, musicInfo, quality } })
     }
-    return reply.code(201).send({ acceptedCount: accepted.length, accepted })
+    if (!inputs.length) return reply.code(400).send({ error: 'no downloadable item in playlist' })
+    try {
+      const { batchId, ids } = await downloadQueue.enqueueBatch(inputs.map((i) => i.input))
+      const accepted = inputs.map((i, n) => ({ id: ids[n]!, name: i.name }))
+      return reply.code(201).send({ batchId, acceptedCount: accepted.length, accepted })
+    } catch (err) {
+      const code = classifyError(err)
+      const message = err instanceof Error ? err.message : String(err)
+      return reply.code(isDiskFullError(err) ? 507 : errorToStatus(code)).send({ error: { code, message } })
+    }
+  })
+
+  // H2: 仅下载未拥有项——跳过已有落盘文件的完成曲（taskStore.findCompletedWithFile）
+  app.post<{ Params: { id: string }; Body: { quality?: Quality } }>('/api/v1/playlists/:id/download-missing', async (req, reply) => {
+    if (!playlistStore.get(req.params.id, requestUid(req))) return reply.code(404).send({ error: 'playlist not found' })
+    const quality = req.body?.quality ?? 'flac'
+    if (!VALID_QUALITIES.includes(quality)) return reply.code(400).send({ error: 'invalid quality', valid: VALID_QUALITIES })
+    const items = playlistStore.items(req.params.id)
+    if (!items.length) return reply.code(400).send({ error: 'playlist is empty' })
+    const inputs: { name: string; input: Parameters<typeof downloadQueue.enqueue>[0] }[] = []
+    const skipped: { name: string; songmid: string; reason: string }[] = []
+    for (const it of items) {
+      if (!isPlatform(it.platform)) continue
+      // 已拥有（已完成且带落盘文件）→跳过，不重复下载
+      if (taskStore.findCompletedWithFile(it.platform, it.songmid)) {
+        skipped.push({ name: it.name, songmid: it.songmid, reason: 'already-owned' })
+        continue
+      }
+      const musicInfo = JSON.parse(it.music_info) as MusicInfo
+      inputs.push({ name: it.name, input: { platform: it.platform, musicInfo, quality } })
+    }
+    if (!inputs.length) {
+      return reply.code(200).send({ batchId: null, acceptedCount: 0, skippedCount: skipped.length, accepted: [], skipped })
+    }
+    try {
+      const { batchId, ids } = await downloadQueue.enqueueBatch(inputs.map((i) => i.input))
+      const accepted = inputs.map((i, n) => ({ id: ids[n]!, name: i.name }))
+      return reply.code(201).send({ batchId, acceptedCount: accepted.length, skippedCount: skipped.length, accepted, skipped })
+    } catch (err) {
+      const code = classifyError(err)
+      const message = err instanceof Error ? err.message : String(err)
+      return reply.code(isDiskFullError(err) ? 507 : errorToStatus(code)).send({ error: { code, message } })
+    }
   })
 }

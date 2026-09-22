@@ -13,8 +13,14 @@ import { userIsAdmin } from '../core/auth/index.js'
 import { notify } from '../core/notify/index.js'
 import { downloadQueue } from '../core/download/queue.js'
 import { rescheduleSmoke } from '../core/smoke/scheduler.js'
+import { ALL_PLATFORMS, isPlatform } from '../core/search/index.js'
 
 const QUALITIES = ['flac24bit', 'flac', '320k', '128k']
+
+/** #191 J2：平台权重默认值（与 config.ts buildDefaultConfig 同源） */
+const DEFAULT_PLATFORM_WEIGHTS: Record<string, number> = { kw: 1, kg: 1, tx: 1.1, wy: 1, mg: 0.9 }
+/** #191：联想标题池取榜平台默认值 */
+const DEFAULT_SUGGEST_PLATFORMS: string[] = ['wy', 'tx', 'kg']
 
 /** #73 下载目录路径长度上限（前后端同步：前端 input maxlength=512） */
 const DOWNLOAD_DIR_MAX = 512
@@ -58,10 +64,34 @@ function safeView() {
       // startupResolvedDir = 本次进程启动时快照，两者不一致 → 前端显示「待重启」角标
       resolvedDir: config.download.dir,
       startupResolvedDir: STARTUP_DOWNLOAD_DIR,
+      // G1/G2/H5/F2: P1 下载引擎强化配置（脱敏视图透出，前端设置页可编辑）
+      dirTemplate: config.download.dirTemplate ?? '',
+      dedupePolicy: config.download.dedupePolicy ?? 'skip',
+      batchMaxItems: config.download.batchMaxItems ?? 200,
+      resume: config.download.resume !== false,
+      // N3: 磁盘预检配置（脱敏视图透出，前端设置页可编辑）
+      diskPrecheck: config.download.diskPrecheck !== false,
+      minFreeBytes: config.download.minFreeBytes ?? 104857600,
+    },
+    // L1/L2/L3: 音源健康编排与限速配置（透供设置页编辑）
+    sources: {
+      healthAware: config.sources.healthAware !== false,
+      circuitThreshold: config.sources.circuitThreshold ?? 5,
+      circuitWindowMs: config.sources.circuitWindowMs ?? 300000,
+      ratePerMin: config.sources.ratePerMin ?? 0,
     },
     scrape: {
       enabled: config.scrape?.enabled !== false,
       autoOnComplete: config.scrape?.autoOnComplete !== false,
+    },
+    // #191 P1 搜索后端 J：相关度评分平台权重 + 联想取榜平台（透供设置页编辑）
+    // #200 P2 搜索高阶 O4/O5：错字容错开关/阈值 + 相关推荐开关
+    search: {
+      platformWeights: config.search?.platformWeights ?? DEFAULT_PLATFORM_WEIGHTS,
+      suggestPlatforms: config.search?.suggestPlatforms ?? DEFAULT_SUGGEST_PLATFORMS,
+      correctEnabled: config.search?.correctEnabled !== false,
+      correctMinResults: config.search?.correctMinResults ?? 3,
+      relatedEnabled: config.search?.relatedEnabled !== false,
     },
     smokeTest: {
       // 防御性可选链 + 空值兜底（默认值与 config.ts buildDefaultConfig 同源），
@@ -109,12 +139,42 @@ interface SettingsPatch {
     coverSize: number
     /** #73 下载目录（相对路径相对项目根解析 / 绝对路径原样使用，重启后新目录完全生效） */
     dir: string
+    /** G1: 落盘子目录模板（''=平铺；支持 '{singer}/{album}'、'{singerFirstLetter}/{singer}'） */
+    dirTemplate: string
+    /** H5: 入队去重策略 */
+    dedupePolicy: 'skip' | 'replace' | 'always-new'
+    /** H1/H5: 批量入队单次上限 */
+    batchMaxItems: number
+    /** F2: 断点续传开关 */
+    resume: boolean
+    /** N3: 入队前磁盘空间预检开关 */
+    diskPrecheck: boolean
+    /** N3: 最小可用磁盘字节数 */
+    minFreeBytes: number
+  }>
+  /** L1/L2/L3: 音源健康编排与限速 */
+  sources?: Partial<{
+    healthAware: boolean
+    circuitThreshold: number
+    circuitWindowMs: number
+    ratePerMin: number
   }>
   /** #73 顶层快捷字段：设置页「修改下载目录」独立入口发送，语义等同 download.dir */
   downloadDir?: string
   scrape?: {
     enabled?: boolean
     autoOnComplete?: boolean
+  }
+  /** #191 P1 搜索后端 J：平台权重与联想取榜平台；#200 P2 O4/O5：错字容错与相关推荐 */
+  search?: {
+    platformWeights?: Record<string, number>
+    suggestPlatforms?: string[]
+    /** #200 O4：错字容错开关 */
+    correctEnabled?: boolean
+    /** #200 O4：触发纠错的聚合结果数阈值（1-50） */
+    correctMinResults?: number
+    /** #200 O5：相关推荐开关 */
+    relatedEnabled?: boolean
   }
   smokeTest?: {
     enabled?: boolean
@@ -163,6 +223,89 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
     if (body.download?.coverSize != null) {
       const s = Number(body.download.coverSize)
       if (!Number.isInteger(s) || s < 100 || s > 1000) return reply.code(400).send({ error: 'coverSize 需为 100-1000 的整数' })
+    }
+    // G1: dirTemplate 字符串校验（''=平铺合法；非字符串拒绝；超长与控制字符同 downloadDir 口径）
+    if (body.download?.dirTemplate != null) {
+      const t = body.download.dirTemplate
+      if (typeof t !== 'string') return reply.code(400).send({ error: 'dirTemplate 需为字符串' })
+      if (t.length > DOWNLOAD_DIR_MAX) return reply.code(400).send({ error: `dirTemplate 过长（>${DOWNLOAD_DIR_MAX} 字符）` })
+      if (/[\x00-\x1F\x7F]/.test(t)) return reply.code(400).send({ error: 'dirTemplate 包含非法控制字符' })
+      body.download.dirTemplate = t.trim()
+    }
+    // H5: dedupePolicy 枚举校验
+    if (body.download?.dedupePolicy != null && !['skip', 'replace', 'always-new'].includes(body.download.dedupePolicy)) {
+      return reply.code(400).send({ error: 'invalid dedupePolicy', valid: ['skip', 'replace', 'always-new'] })
+    }
+    // H1/H5: batchMaxItems 正整数校验（1-1000）
+    if (body.download?.batchMaxItems != null) {
+      const b = Number(body.download.batchMaxItems)
+      if (!Number.isInteger(b) || b < 1 || b > 1000) return reply.code(400).send({ error: 'batchMaxItems 需为 1-1000 的整数' })
+    }
+    // F2: resume 布尔校验
+    if (body.download?.resume != null && typeof body.download.resume !== 'boolean') {
+      return reply.code(400).send({ error: 'resume 需为布尔值' })
+    }
+    // N3: diskPrecheck 布尔校验
+    if (body.download?.diskPrecheck != null && typeof body.download.diskPrecheck !== 'boolean') {
+      return reply.code(400).send({ error: 'diskPrecheck 需为布尔值' })
+    }
+    // N3: minFreeBytes 非负整数校验（0=不限制；上限 1TB 防误填）
+    if (body.download?.minFreeBytes != null) {
+      const m = Number(body.download.minFreeBytes)
+      if (!Number.isInteger(m) || m < 0 || m > 1_099_511_627_776) return reply.code(400).send({ error: 'minFreeBytes 需为 0 - 1TB 的整数' })
+    }
+    // L1: sources.healthAware 布尔校验
+    if (body.sources?.healthAware != null && typeof body.sources.healthAware !== 'boolean') {
+      return reply.code(400).send({ error: 'sources.healthAware 需为布尔值' })
+    }
+    // L2: circuitThreshold 正整数（1-100）
+    if (body.sources?.circuitThreshold != null) {
+      const c = Number(body.sources.circuitThreshold)
+      if (!Number.isInteger(c) || c < 1 || c > 100) return reply.code(400).send({ error: 'sources.circuitThreshold 需为 1-100 的整数' })
+    }
+    // L2: circuitWindowMs 正整数（1000ms - 1h）
+    if (body.sources?.circuitWindowMs != null) {
+      const w = Number(body.sources.circuitWindowMs)
+      if (!Number.isInteger(w) || w < 1000 || w > 3_600_000) return reply.code(400).send({ error: 'sources.circuitWindowMs 需为 1000-3600000 的整数' })
+    }
+    // L3: ratePerMin 非负整数（0=不限速；上限 100000）
+    if (body.sources?.ratePerMin != null) {
+      const r = Number(body.sources.ratePerMin)
+      if (!Number.isInteger(r) || r < 0 || r > 100000) return reply.code(400).send({ error: 'sources.ratePerMin 需为 0-100000 的整数' })
+    }
+    // #191 J2: search.platformWeights 校验（对象；键∈平台；值 0-5 数值）
+    if (body.search?.platformWeights != null) {
+      const pw = body.search.platformWeights
+      if (typeof pw !== 'object' || pw === null || Array.isArray(pw)) {
+        return reply.code(400).send({ error: 'platformWeights 需为对象' })
+      }
+      for (const [k, v] of Object.entries(pw)) {
+        if (!isPlatform(k)) return reply.code(400).send({ error: `platformWeights 含未知平台: ${k}`, valid: ALL_PLATFORMS })
+        const n = Number(v)
+        if (!Number.isFinite(n) || n < 0 || n > 5) {
+          return reply.code(400).send({ error: `platformWeights.${k} 需为 0-5 的数值` })
+        }
+      }
+    }
+    // #191: search.suggestPlatforms 校验（数组；元素∈平台）
+    if (body.search?.suggestPlatforms != null) {
+      const sp = body.search.suggestPlatforms
+      if (!Array.isArray(sp)) return reply.code(400).send({ error: 'suggestPlatforms 需为数组' })
+      const invalid = sp.filter((p) => !isPlatform(p))
+      if (invalid.length) return reply.code(400).send({ error: `suggestPlatforms 含未知平台: ${invalid.join(',')}`, valid: ALL_PLATFORMS })
+    }
+    // #200 O4: search.correctEnabled 布尔校验
+    if (body.search?.correctEnabled != null && typeof body.search.correctEnabled !== 'boolean') {
+      return reply.code(400).send({ error: 'search.correctEnabled 需为布尔值' })
+    }
+    // #200 O4: search.correctMinResults 正整数校验（1-50）
+    if (body.search?.correctMinResults != null) {
+      const c = Number(body.search.correctMinResults)
+      if (!Number.isInteger(c) || c < 1 || c > 50) return reply.code(400).send({ error: 'search.correctMinResults 需为 1-50 的整数' })
+    }
+    // #200 O5: search.relatedEnabled 布尔校验
+    if (body.search?.relatedEnabled != null && typeof body.search.relatedEnabled !== 'boolean') {
+      return reply.code(400).send({ error: 'search.relatedEnabled 需为布尔值' })
     }
     // 空字符串的密钥字段视为「不修改」，避免脱敏视图回传后被清空
     if (body.smokeTest?.alert?.bark && body.smokeTest.alert.bark.deviceKey === '') delete body.smokeTest.alert.bark.deviceKey

@@ -45,7 +45,8 @@ interface MgRawItem {
 }
 
 export default {
-  limit: 20,
+  // D4：各平台默认 limit 统一为 30（原 mg=20，与 kw/kg/tx/wy 对齐；配置项 search.defaultLimit 同源）
+  limit: 30,
 
   musicSearch(str: string, page: number, limit: number) {
     const time = Date.now().toString()

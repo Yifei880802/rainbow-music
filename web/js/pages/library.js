@@ -22,16 +22,19 @@
  *   未刮削歌曲（字段缺失）归入「未知专辑/未知艺人」弱化组排末尾；
  *   筛选 chips 计数随维度/drill 联动重算；SSE 刷新自动重算聚合。
  */
-import { $, $$, escapeHtml, toast, statusLabel, PLATFORM_NAME, confirmModal, formatBytes } from '../ui.js'
+import { $, $$, escapeHtml, toast, statusLabel, PLATFORM_NAME, QUALITY_LABEL, confirmModal, formatBytes } from '../ui.js'
 import { api, API_BASE } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
 import { store } from '../storage.js'
+import { isDone, isBusy, QUEUE_RING_LEN, updateQueueRing, subscribeTaskEvents } from '../download-state.js'
 
 const tasks = new Map() // id → 任务视图
 const durations = new Map() // id → 播放加载后回填的时长（秒）；后端任务记录无 duration 列，只能播过才知道
 let inited = false
 let reconciling = false // reconcile 拉取进行中（SSE 增量与快照存在竞态窗口）
+let queueFilter = 'all' // P1-I2：队列状态筛选（all/pending/active/failed/canceled）
+let queuePaused = false // P1-I2：队列暂停状态
 const dirtyDuringReconcile = new Set() // fetch 期间被 SSE upsert 过的任务 id
 
 // #52 批量刮削进度（scrape:progress SSE {done,total}；仅批量进行中非空，running 徽标展示 done/total 进度感）
@@ -465,11 +468,7 @@ function initLibSortFilter() {
   applyLibDensity()
 }
 
-const isDone = (t) => t.status === 'completed' || t.status === 'completed_with_warnings'
-const isBusy = (t) => t.status === 'pending' || t.status === 'active'
-
-// P1：40px SVG 下载进度环周长（r=16，2πr≈100.53，与 style.css .dl-ring-fill 一致）
-const RING_LEN = 100.53
+// isDone / isBusy / RING_LEN 已收敛至 download-state.js（P0-A1）
 
 /** 秒 → m:ss */
 function fmtDur(sec) {
@@ -489,9 +488,7 @@ export function init() {
 
   // SSE 订阅（全局单连接，断线自动重连）
   sse.on('connected', reconcile) // 首包/重连成功 → 全量对账
-  for (const ev of ['task:created', 'task:pending', 'task:active', 'task:completed', 'task:completed_with_warnings', 'task:failed', 'task:canceled']) {
-    sse.on(ev, upsert)
-  }
+  subscribeTaskEvents(sse, upsert)
   sse.on('task:progress', onProgress)
   sse.on('sse:state', (st) => {
     const dot = $('#sse-dot')
@@ -534,6 +531,9 @@ export function init() {
   // v0.2.1 模块六：NAS 音乐面板（搜索/刷新/加载更多/行点击播放 + SSE 扫描进度）
   initNas()
 
+  // P1-I2：队列批量操作 + 暂停/恢复 + 筛选 chips
+  initQueueOps()
+
   inited = true
 }
 
@@ -562,11 +562,8 @@ function onProgress(p) {
   }
   const row = document.querySelector(`#library-queue-list .queue-row[data-id="${p.id}"]`)
   if (!row) return
-  // P1：进度环增量更新（细条已被环替换）；百分比文字同步
-  const ringFill = row.querySelector('.dl-ring-fill')
-  if (ringFill) ringFill.style.strokeDashoffset = String(RING_LEN * (1 - (p.percent || 0) / 100))
-  const ringPct = row.querySelector('.dl-ring-pct')
-  if (ringPct) ringPct.textContent = `${p.percent || 0}%`
+  // P1：进度环增量更新（委托公共模块 updateQueueRing，P0-A1 收敛）
+  updateQueueRing(row, p.percent)
   const txt = row.querySelector('.progress-txt')
   if (txt) txt.textContent = progressText(t, p.percent)
 }
@@ -578,7 +575,7 @@ async function reconcile() {
   reconciling = true
   dirtyDuringReconcile.clear()
   try {
-    const r = await api.tasks.list()
+    const r = await api.tasks.list({ limit: 500 })
     const snapshot = r.tasks || []
     const merged = new Map(snapshot.map((t) => [t.id, t]))
     for (const id of dirtyDuringReconcile) {
@@ -752,7 +749,7 @@ function render() {
         return `
       <div class="song-row" role="listitem" data-id="${escapeHtml(t.id)}" tabindex="0" title="${escapeHtml(songRowTitle(t))}">
         <div class="song-cover" aria-hidden="true">
-          <img class="cover-img" src="${API_BASE}/api/v1/cover/${encodeURIComponent(t.id)}" alt="" loading="lazy" onerror="this.remove()" />
+          ${t.filePath ? `<img class="cover-img" src="${API_BASE}/api/v1/cover/${encodeURIComponent(t.id)}" alt="" loading="lazy" onerror="this.remove()" />` : ''}
           <svg class="song-note" viewBox="0 0 24 24" width="18" height="18"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
           <span class="song-eq" aria-hidden="true"><i></i><i></i><i></i></span>
           <button class="song-play" data-act="play" data-id="${escapeHtml(t.id)}" type="button" aria-label="播放 ${escapeHtml(name)}">
@@ -787,9 +784,36 @@ function render() {
   } else {
     qBox.hidden = false
     const busy = queue.filter(isBusy).length
-    const bad = queue.length - busy
-    $('#queue-summary').textContent = `进行中 ${busy}${bad ? ` · 失败/取消 ${bad}` : ''}`
-    $('#library-queue-list').innerHTML = queue
+    const failedCount = queue.filter((t) => t.status === 'failed' || t.status === 'canceled').length
+    $('#queue-summary').textContent = `进行中 ${busy}${failedCount ? ` · 失败/取消 ${failedCount}` : ''}`
+
+    // P1-I1：队列聚合进度条（总完成百分比 + 进行中/失败计数）
+    const allTasks = [...tasks.values()]
+    const totalAll = allTasks.length
+    const completedAll = allTasks.filter(isDone).length
+    const aggPct = totalAll > 0 ? Math.round((completedAll / totalAll) * 100) : 0
+    const aggFill = $('#queue-agg-fill')
+    const aggTxt = $('#queue-agg-txt')
+    if (aggFill) aggFill.style.width = `${aggPct}%`
+    if (aggTxt) aggTxt.textContent = `总进度 ${aggPct}%（${completedAll}/${totalAll}）· 进行中 ${busy}${failedCount ? ` · 失败 ${failedCount}` : ''}`
+
+    // P1-I2：批量操作按钮状态
+    const pauseBtn = $('#q-pause-resume')
+    if (pauseBtn) {
+      pauseBtn.classList.toggle('is-paused', queuePaused)
+      const lbl = $('#q-pause-label')
+      if (lbl) lbl.textContent = queuePaused ? '恢复' : '暂停'
+    }
+    const cancelAllBtn = $('#q-cancel-all')
+    if (cancelAllBtn) cancelAllBtn.disabled = !busy
+    const retryAllBtn = $('#q-retry-all')
+    if (retryAllBtn) retryAllBtn.disabled = !failedCount
+    const clearBtn = $('#q-clear-failed')
+    if (clearBtn) clearBtn.disabled = !failedCount
+
+    // P1-I2：队列状态筛选
+    const filtered = queueFilter === 'all' ? queue : queue.filter((t) => t.status === queueFilter)
+    $('#library-queue-list').innerHTML = filtered
       .map((t) => {
         const { name, singer } = songMeta(t)
         const pct = t.progress || 0
@@ -800,13 +824,17 @@ function render() {
         if (t.status === 'failed' || t.status === 'canceled' || t.status === 'completed_with_warnings') {
           acts += `<button data-act="retry" data-id="${escapeHtml(t.id)}">重试</button>`
         }
+        if (t.status === 'failed') {
+          // P2 M：「为什么失败」懒加载展开钮（展开态跨 render 记忆，文案随态切换）
+          acts += `<button data-act="why" data-id="${escapeHtml(t.id)}" class="why-btn" aria-expanded="${whyExpanded.has(t.id)}">${whyExpanded.has(t.id) ? '收起原因' : '为什么失败'}</button>`
+        }
         acts += `<button data-act="del" data-id="${escapeHtml(t.id)}" class="danger-lite">删除</button>`
         return `
       <div class="queue-row" data-id="${escapeHtml(t.id)}">
         <div class="dl-ring${ringState}" title="${statusLabel(t.status)} ${pct}%" aria-hidden="true">
           <svg viewBox="0 0 40 40" width="40" height="40">
             <circle class="dl-ring-track" cx="20" cy="20" r="16" />
-            <circle class="dl-ring-fill" cx="20" cy="20" r="16" style="stroke-dashoffset:${(RING_LEN * (1 - pct / 100)).toFixed(2)}" />
+            <circle class="dl-ring-fill" cx="20" cy="20" r="16" style="stroke-dashoffset:${(QUEUE_RING_LEN * (1 - pct / 100)).toFixed(2)}" />
           </svg>
           <span class="dl-ring-pct">${pct}%</span>
         </div>
@@ -819,7 +847,8 @@ function render() {
           ${t.error ? `<div class="queue-err" title="${escapeHtml(t.error)}">${escapeHtml(t.error)}</div>` : ''}
         </div>
         <div class="queue-act">${acts}</div>
-      </div>`
+      </div>
+      ${t.status === 'failed' && whyExpanded.has(t.id) ? attemptsPanel(t.id) : ''}`
       })
       .join('')
   }
@@ -939,6 +968,10 @@ async function onQueueAction(e) {
   const btn = e.target.closest('button[data-act]')
   if (!btn) return
   const { act, id } = btn.dataset
+  if (act === 'why') {
+    void toggleWhy(id) // P2 M：懒加载 /tasks/:id/attempts，展开/收起失败原因轨迹
+    return
+  }
   try {
     if (act === 'cancel') {
       await api.tasks.cancel(id)
@@ -957,6 +990,177 @@ async function onQueueAction(e) {
   } catch (err) {
     toast(err.message)
   }
+}
+
+/* ============================================================
+   P2 M · 失败任务「为什么失败」可展开审计轨迹
+   - 点击懒加载 GET /tasks/:id/attempts（{ attempts: DownloadAttemptRow[] }），
+     结果按 id 缓存（attemptsCache）；展开态跨 render() 重渲染用 whyExpanded 记忆。
+   - error_code 人类可读映射（ERR_CODE_LABEL），附原文兜底；ts 为 Date.now() 毫秒。
+   - 与既有 cancel/retry/del 按钮同处 queue-act，data-act="why" 独立分支，互不干扰。
+   ============================================================ */
+const whyExpanded = new Set() // 已展开失败原因的任务 id（跨 render 记忆）
+const attemptsCache = new Map() // id → { ok:true, attempts:[] } | { ok:false, error:string }
+
+const ERR_CODE_LABEL = {
+  ERR_DNS: '网络解析失败',
+  ERR_TIMEOUT: '请求超时',
+  ERR_HTTP_4XX: '上游错误（4xx）',
+  ERR_HTTP_5XX: '上游错误（5xx）',
+  ERR_NO_SOURCE: '无可用音源',
+  ERR_ALL_SOURCES_FAILED: '全部音源失败',
+  ERR_DISK_FULL: '磁盘空间不足',
+  ERR_TAG_EMBED: '标签写入失败',
+  ERR_BAD_REQUEST: '请求参数有误',
+  ERR_UNKNOWN: '未知错误',
+}
+
+/** error_code → 人类可读（命中映射用中文 + 附原文；未命中回退原文；null/空 = 该次尝试成功） */
+function errCodeText(code) {
+  if (code == null || code === '') return '<span class="att-ok">成功</span>'
+  const label = ERR_CODE_LABEL[code]
+  const raw = `<span class="att-code">${escapeHtml(String(code))}</span>`
+  return label ? `${label} ${raw}` : raw
+}
+
+/** ts（毫秒）→ 本地时间串；非法/0 返回空（兼容秒级时间戳兜底） */
+function attTime(ts) {
+  const n = Number(ts)
+  if (!n || !isFinite(n)) return ''
+  const ms = n < 1e12 ? n * 1000 : n
+  try {
+    return new Date(ms).toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
+/** 失败原因展开面板：加载中 / 加载失败 / 空 / 轨迹表 */
+function attemptsPanel(id) {
+  const c = attemptsCache.get(id)
+  if (!c) return `<div class="attempts-box" data-id="${escapeHtml(id)}"><div class="att-loading">加载失败原因中…</div></div>`
+  if (!c.ok) return `<div class="attempts-box" data-id="${escapeHtml(id)}"><div class="att-empty">加载失败：${escapeHtml(c.error || '未知错误')}</div></div>`
+  const rows = c.attempts
+  if (!rows.length) return `<div class="attempts-box" data-id="${escapeHtml(id)}"><div class="att-empty">暂无下载尝试记录（可能尚未执行或去重复用）</div></div>`
+  const body = rows
+    .map((a) => {
+      const when = attTime(a.ts)
+      return `<div class="att-row">
+        <span class="att-no" title="重试轮次">#${escapeHtml(String(a.attempt_no ?? '-'))}</span>
+        <span class="att-plat">${escapeHtml(PLATFORM_NAME[a.platform] || a.platform || '-')}</span>
+        <span class="att-q">${escapeHtml(QUALITY_LABEL[a.quality] || a.quality || '-')}</span>
+        <code class="att-src" title="source_id">${escapeHtml(String(a.source_id || '-'))}</code>
+        <span class="att-err">${errCodeText(a.error_code)}</span>
+        ${when ? `<span class="att-ts">${escapeHtml(when)}</span>` : ''}
+      </div>`
+    })
+    .join('')
+  return `<div class="attempts-box" data-id="${escapeHtml(id)}">
+    <div class="att-head">下载尝试轨迹 · 按轮次 / 时间（共 ${rows.length} 次）</div>
+    ${body}
+  </div>`
+}
+
+/** 展开/收起失败原因：首次展开懒加载 attempts 并缓存，随后 render() 重建面板 */
+async function toggleWhy(id) {
+  if (!id) return
+  if (whyExpanded.has(id)) {
+    whyExpanded.delete(id)
+    render()
+    return
+  }
+  whyExpanded.add(id)
+  if (!attemptsCache.has(id)) {
+    render() // 先渲染「加载中…」占位（懒加载：仅首次展开才请求）
+    try {
+      const data = await api.tasks.attempts(id)
+      attemptsCache.set(id, { ok: true, attempts: Array.isArray(data?.attempts) ? data.attempts : [] })
+    } catch (err) {
+      attemptsCache.set(id, { ok: false, error: err?.message || '加载失败' })
+    }
+    if (!whyExpanded.has(id)) return // 加载期间已被收起 → 不覆盖当前 UI
+  }
+  render()
+}
+
+/* ============================================================
+   P1-I2 · 队列批量操作 + 暂停/恢复 + 状态筛选 chips
+   ============================================================ */
+function initQueueOps() {
+  // 筛选 chips
+  $('#queue-filter-chips')?.addEventListener('click', (e) => {
+    const chip = e.target.closest('.qf-chip')
+    if (!chip) return
+    queueFilter = chip.dataset.qf || 'all'
+    $$('#queue-filter-chips .qf-chip').forEach((c) => c.classList.toggle('active', c === chip))
+    render()
+  })
+
+  // 暂停/恢复
+  $('#q-pause-resume')?.addEventListener('click', async () => {
+    try {
+      const r = queuePaused ? await api.queue.resume() : await api.queue.pause()
+      queuePaused = r?.paused ?? !queuePaused
+      toast(queuePaused ? '队列已暂停' : '队列已恢复')
+      render()
+    } catch (err) {
+      toast(err.message)
+    }
+  })
+
+  // 全部取消
+  $('#q-cancel-all')?.addEventListener('click', async () => {
+    const busy = [...tasks.values()].filter(isBusy)
+    if (!busy.length) return
+    const ok = await confirmModal(`确认取消所有 ${busy.length} 个进行中任务？`, { danger: true, okLabel: '全部取消' })
+    if (!ok) return
+    try {
+      await Promise.allSettled(busy.map((t) => api.tasks.cancel(t.id)))
+      toast(`已取消 ${busy.length} 个任务`)
+      reconcile()
+    } catch (err) {
+      toast(err.message)
+    }
+  })
+
+  // 全部重试
+  $('#q-retry-all')?.addEventListener('click', async () => {
+    const failed = [...tasks.values()].filter((t) => t.status === 'failed' || t.status === 'canceled')
+    if (!failed.length) return
+    try {
+      await Promise.allSettled(failed.map((t) => api.tasks.retry(t.id)))
+      toast(`已重新入队 ${failed.length} 个任务`)
+      reconcile()
+    } catch (err) {
+      toast(err.message)
+    }
+  })
+
+  // 清空失败
+  $('#q-clear-failed')?.addEventListener('click', async () => {
+    const failed = [...tasks.values()].filter((t) => t.status === 'failed' || t.status === 'canceled')
+    if (!failed.length) return
+    const ok = await confirmModal(`确认删除 ${failed.length} 个失败/取消任务记录？`, { danger: true, okLabel: '清空' })
+    if (!ok) return
+    try {
+      await Promise.allSettled(failed.map((t) => api.tasks.remove(t.id)))
+      for (const t of failed) tasks.delete(t.id)
+      toast(`已清除 ${failed.length} 条记录`)
+      render()
+    } catch (err) {
+      toast(err.message)
+    }
+  })
+
+  // 初始拉取队列状态（暂停态）
+  pollQueueStatus()
+}
+
+async function pollQueueStatus() {
+  try {
+    const st = await api.queue.status()
+    queuePaused = !!(st?.paused || st?.memPaused)
+  } catch { /* 无权限或未就绪 */ }
 }
 
 /** 当前播放歌曲橙色发光高亮（模块六：同步覆盖 NAS 行） */

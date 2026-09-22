@@ -47,6 +47,30 @@ export async function sourceRoutes(app: FastifyInstance): Promise<void> {
     return { sources: sourceEngine.list().map(view) }
   })
 
+  /**
+   * C4: 音质能力查询 — 聚合 ready+enabled 音源，返回该平台可达最高音质与音源列表。
+   * 响应契约：200 { platform, qualities:{ flac24bit, flac, '320k', '128k': bool }, sources:[{ id, name, qualities:string[] }] }
+   */
+  app.get<{ Querystring: { platform?: string } }>('/api/v1/sources/capabilities', async (req, reply) => {
+    const platform = req.query.platform
+    if (!platform) return reply.code(400).send({ error: 'platform query parameter is required' })
+
+    const allSources = sourceEngine.list().filter((s) => s.status === 'ready' && s.enabled && s.sources[platform])
+
+    const qualities: Record<string, boolean> = { flac24bit: false, flac: false, '320k': false, '128k': false }
+    const sourcesList: { id: string; name: string; qualities: string[] }[] = []
+
+    for (const s of allSources) {
+      const srcQualities = s.sources[platform]?.qualitys ?? []
+      for (const q of srcQualities) {
+        if (q in qualities) qualities[q] = true
+      }
+      sourcesList.push({ id: s.id, name: s.info.name, qualities: [...srcQualities] })
+    }
+
+    return { platform, qualities, sources: sourcesList }
+  })
+
   app.post<{ Body: ImportContentBody }>('/api/v1/sources/import/content', async (req, reply) => {
     // v0.2.1 模块三：音源脚本为可执行 JS，导入/启停/冒烟/删除等管理操作限管理员（GET 可读）
     if (!userIsAdmin(req.user)) {

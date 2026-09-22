@@ -14,6 +14,9 @@
  *   POST   /api/v1/me/favorites           { kind, ref } kind ∈ track|playlist|square
  *   DELETE /api/v1/me/favorites/:kind/:ref
  *   GET    /api/v1/me/favorites            该 uid 全部收藏
+ *   GET    /api/v1/me/search-history?limit= 搜索历史（P0 D1；limit clamp 1..200，默认 50）
+ *   POST   /api/v1/me/search-history       { kw, type?, platform? } 去重置顶 + 封顶 200/uid → 201
+ *   DELETE /api/v1/me/search-history       清空当前 uid 搜索历史 → { ok:true }
  *
  * uid 口径：req.user.uid（网关用户各自隔离；本地 admin='legacy'）；
  * 鉴权关闭时 req.user=null → 按 legacy/admin 兜底（与 v0.2.0 行为一致）。
@@ -21,6 +24,7 @@
 import type { FastifyInstance } from 'fastify'
 import { config } from '../core/config.js'
 import { scanRootStore, historyStore, favoritesStore, HISTORY_KEEP } from '../core/db/users.js'
+import { searchHistoryStore, SEARCH_HISTORY_KEEP } from '../core/db/searchHistory.js'
 
 /** 插件级选项：由 buildApp 按实例传入，决定 mode 字段取值 */
 export interface MePluginOptions {
@@ -148,6 +152,58 @@ export async function meRoutes(app: FastifyInstance, opts: MePluginOptions = {})
         return { id: r.id, track, played_at: r.played_at }
       }),
     }
+  })
+
+  // ── 搜索历史（P0 D1：登录态跨设备同步；服务端去重置顶 + 每 uid 封顶 SEARCH_HISTORY_KEEP 条）──
+  // GET 契约：?limit=<n> → 200 { items:[{ id, kw, type, platform, ts }] }（limit clamp 1..SEARCH_HISTORY_KEEP，默认 50）
+  app.get<{ Querystring: { limit?: string } }>('/api/v1/me/search-history', async (req) => {
+    const uid = effectiveUser(req).uid
+    let limit = Number(req.query?.limit ?? 50)
+    if (!Number.isInteger(limit) || limit < 1) limit = 50
+    limit = Math.min(limit, SEARCH_HISTORY_KEEP)
+    return {
+      items: searchHistoryStore.list(uid, limit).map((r) => ({
+        id: r.id,
+        kw: r.kw,
+        type: r.type,
+        platform: r.platform,
+        ts: r.ts,
+      })),
+    }
+  })
+
+  // POST 契约：body { kw, type?, platform? } → 201 { id, kw, type, platform, ts }
+  // kw 必填且 trim 后非空（空则 400）；type/platform 可选，缺省存空串。去重置顶由 store 保证。
+  app.post<{ Body: { kw?: unknown; type?: unknown; platform?: unknown } }>(
+    '/api/v1/me/search-history',
+    async (req, reply) => {
+      const uid = effectiveUser(req).uid
+      const { kw, type, platform } = req.body ?? {}
+      if (typeof kw !== 'string' || !kw.trim()) {
+        return reply.code(400).send({ error: 'kw (non-empty string) is required' })
+      }
+      // 长度护栏：与 favorites ref 同量级，防单条超大字符串撑爆历史表
+      if (kw.length > 512) {
+        return reply.code(400).send({ error: 'kw too long (max 512 chars)' })
+      }
+      const typeStr = typeof type === 'string' ? type : ''
+      const platformStr = typeof platform === 'string' ? platform : ''
+      const row = searchHistoryStore.add(uid, kw, typeStr, platformStr)
+      return reply.code(201).send({
+        id: row.id,
+        kw: row.kw,
+        type: row.type,
+        platform: row.platform,
+        ts: row.ts,
+      })
+    },
+  )
+
+  // DELETE 契约：清空当前 uid 全部搜索历史 → 200 { ok:true }
+  app.delete('/api/v1/me/search-history', async (req) => {
+    const uid = effectiveUser(req).uid
+    searchHistoryStore.clear(uid)
+    return { ok: true }
   })
 
   // ── 收藏（kind 白名单 + UNIQUE(uid,kind,ref) 去重）──

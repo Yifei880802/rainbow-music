@@ -89,6 +89,8 @@ export interface MusicInfo {
   mrcUrl?: string
   trcUrl?: string
   otherSource?: null
+  /** #191 J2：本地相关度评分（scoring pass 写入，越大越相关；上游不产出） */
+  score?: number
 }
 
 export interface SearchResult {

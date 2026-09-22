@@ -60,6 +60,19 @@ const putReq = withJson('PUT')
 const del = (path) => request(path, { method: 'DELETE' })
 const enc = encodeURIComponent
 
+/** P2 O1 试听失败文案：按 HTTP 状态 + 结构化错误码映射为友好提示（附原文兜底） */
+function previewErrMsg(status, code, message) {
+  if (status === 400) return '试听参数有误，无法播放'
+  if (status === 502 || status === 503 || status === 504) {
+    return code === 'ERR_NO_SOURCE' || code === 'ERR_ALL_SOURCES_FAILED'
+      ? '暂无可用音源，试听失败'
+      : '暂时无法获取试听链接（音源不可用），请稍后再试'
+  }
+  if (message) return `试听失败：${message}`
+  if (code) return `试听失败（${code}）`
+  return `试听失败（HTTP ${status}）`
+}
+
 export const api = {
   // ---------- 1. 认证 ----------
   auth: {
@@ -79,9 +92,28 @@ export const api = {
     history: (limit) => request(`/me/history${qs({ limit })}`),
     /** POST {track:任意JSON}（播放上报，前端节流防刷） */
     addHistory: (track) => post('/me/history', { track }),
+    // ---------- P2 O2：「我喜欢」收藏（契约见 server/src/routes/me.ts，按 uid 隔离） ----------
+    /** kind 白名单：track | playlist | square；ref 为非空字符串且 ≤1024 字符；UNIQUE(uid,kind,ref) 天然去重 */
+    /** GET → { favorites:[{ kind, ref, createdAt }] }（该 uid 全部收藏，无分页） */
     favorites: () => request('/me/favorites'),
+    /** POST { kind, ref } → { ok:true, added:boolean }（added=false 表示已存在，幂等） */
     addFavorite: (kind, ref) => post('/me/favorites', { kind, ref }),
+    /** DELETE /:kind/:ref → { ok:true, deleted:boolean }（deleted=false 表示原本就不在收藏中） */
     removeFavorite: (kind, ref) => del(`/me/favorites/${enc(kind)}/${enc(ref)}`),
+    /** GET + 按 kind 过滤 → ref 的 Set（各页免重复 reduce；kind 缺省 'track'） */
+    favoriteRefs: async (kind = 'track') => {
+      const r = await request('/me/favorites')
+      const set = new Set()
+      for (const f of r?.favorites || []) if (f && f.kind === kind && f.ref) set.add(String(f.ref))
+      return set
+    },
+    // ---------- P0 D1：搜索历史跨设备同步（服务端按 uid 隔离，去重置顶、封顶 200/uid） ----------
+    /** GET ?limit=（服务端 clamp 1..200，默认 50）→ { items:[{ id, kw, type, platform, ts }] } */
+    getSearchHistory: (limit) => request(`/me/search-history${qs({ limit })}`),
+    /** POST { kw, type?, platform? } → 201 { id, kw, type, platform, ts }（kw 空→400） */
+    postSearchHistory: (body) => post('/me/search-history', body),
+    /** DELETE → 200 { ok:true }（清空当前 uid 全部搜索历史） */
+    clearSearchHistory: () => del('/me/search-history'),
   },
 
   // ---------- 1.6 本地音乐库（v0.2.1 模块六：NAS 扫描曲库） ----------
@@ -101,6 +133,28 @@ export const api = {
     songlist: (p) => request(`/search/songlist${qs(p)}`),
     songlistAggregate: (p) => request(`/search/songlist/aggregate${qs(p)}`),
     songlistDetail: (p) => request(`/search/songlist/detail${qs(p)}`),
+    /** P0 D2 联想：GET /search/suggest?q=&limit= → { q, items:[{ text, singer?, type:'history'|'hot'|'title' }] }
+     *  （后端已按 (text,singer) 复合 key 去重；title 池冷启动首拉 ≤8s，调用侧需防抖+loading+失败静默降级） */
+    suggest: (q, limit) => request(`/search/suggest${qs({ q, limit })}`),
+    /** P0 D3 热搜：GET /search/trending?limit= → { items:[{ text, count }] }（实时 DB 无缓存） */
+    trending: (limit) => request(`/search/trending${qs({ limit })}`),
+    /**
+     * P2 O5 相关推荐：GET /search/related?kw=&limit= → { related:[{ kw:string, score:number }] }
+     * 基于搜索历史共现（搜过 X 的人也搜 Y），冷启动后端回退 trending；relatedEnabled=false 或 kw 空 → 空数组。
+     * 调用侧失败/空数组一律静默降级，不阻断搜索。
+     */
+    related: (kw, limit) => request(`/search/related${qs({ kw, limit })}`),
+    /**
+     * P1 J1/J4 合并视图：GET /search/merged?keyword=&platforms=&page=&limit=
+     * → MergedSearchResult { keyword, page, total, list: MergedTrack[] }
+     *   MergedTrack  { name, singer, albumName, img|null, interval?:string|0,
+     *                  qualities:Quality[]（并集按档位降序）, sources:MergedSource[], score（≥0，2 位）}
+     *   MergedSource { platform:'kw'|'kg'|'tx'|'wy'|'mg', songmid, qualities:Quality[], songInfo:MusicInfo }
+     *   Quality = '128k'|'320k'|'flac'|'flac24bit'
+     * 服务端跨平台去重（主键 name+singer、辅键 interval±5s）后按 score 降序；
+     * platforms 缺省 = 全平台（逗号分隔字符串）；limit 透传底层聚合作为各平台默认条数。
+     */
+    merged: (keyword, { platforms, page, limit } = {}) => request(`/search/merged${qs({ keyword, platforms, page, limit })}`),
   },
 
   // ---------- 热门歌单（#60 首页聚合：5 平台 7 榜，平台失败进 errors 不阻塞） ----------
@@ -115,11 +169,41 @@ export const api = {
     batch: (body) => post('/download/batch', body),
   },
   tasks: {
-    list: (status) => request(`/tasks${qs({ status })}`),
+    /** GET /tasks?status&batchId&limit&offset → { tasks, limit, offset, count, total } */
+    list: (params) => request(`/tasks${qs(typeof params === 'string' ? { status: params } : params)}`),
+    /** #196-fix2: GET /tasks/owned → { owned:[{ key, taskId, status, quality, hasFile }] } 覆盖全部终态任务（无分页） */
+    owned: () => request('/tasks/owned'),
     get: (id) => request(`/tasks/${enc(id)}`),
+    /**
+     * M 错误可观测：GET /tasks/:id/attempts → { attempts: DownloadAttemptRow[] }
+     * 每行 = { task_id, attempt_no:number, source_id, platform, quality, error_code:string|null, ts:number }
+     * attempt_no = 重试轮次（从 1 起，同轮跨音源/音质多次尝试共享同号），按 ts 升序。
+     * 任务不存在 404；存在但无尝试返回空数组。
+     */
+    attempts: (id) => request(`/tasks/${enc(id)}/attempts`),
     retry: (id) => post(`/tasks/${enc(id)}/retry`),
     cancel: (id) => post(`/tasks/${enc(id)}/cancel`),
     remove: (id) => del(`/tasks/${enc(id)}`),
+  },
+
+  // ---------- 3.5 批次管理（P1-I2） ----------
+  batches: {
+    /** GET /batches → { batches:[{batch_id,total,pending,active,completed,failed,canceled,created_at,updated_at}] } */
+    list: () => request('/batches'),
+    /** GET /batches/:id → { batchId,total,pending,active,completed,failed,canceled,tasks:[...] } */
+    get: (id) => request(`/batches/${enc(id)}`),
+    /** POST /batches/:id/cancel (admin) → { batchId, canceled } */
+    cancel: (id) => post(`/batches/${enc(id)}/cancel`),
+  },
+
+  // ---------- 3.6 队列控制（P1-I2） ----------
+  queue: {
+    /** POST /queue/pause (admin) → queueStatus 快照 */
+    pause: () => post('/queue/pause'),
+    /** POST /queue/resume (admin) → queueStatus 快照 */
+    resume: () => post('/queue/resume'),
+    /** GET /queue/status (admin) → { paused,memPaused,concurrency,scheduled,activationBuffer,running,pending,active,completed,failed,canceled } */
+    status: () => request('/queue/status'),
   },
 
   // ---------- 歌词（P2：np 面板歌词 sidecar） ----------
@@ -142,6 +226,8 @@ export const api = {
     /** #57 拖拽排序落库：body { itemIds: [...] } 幂等重排（契约见 API.md §8） */
     orderItems: (id, itemIds) => putReq(`/playlists/${enc(id)}/items/order`, { itemIds }),
     download: (id, body) => post(`/playlists/${enc(id)}/download`, body),
+    /** POST /playlists/:id/download-missing → { batchId, acceptedCount, skippedCount, accepted, skipped } */
+    downloadMissing: (id, body) => post(`/playlists/${enc(id)}/download-missing`, body ?? {}),
   },
 
   // ---------- 4. 音源管理 ----------
@@ -160,6 +246,13 @@ export const api = {
     remove: (id) => del(`/sources/${enc(id)}`),
     /** #56 一键快速冒烟：同步返回音源×平台矩阵（≤60s；409 = 已有冒烟在跑） */
     smoke: () => post('/sources/smoke'),
+    /**
+     * P1 C4 音质能力：GET /sources/capabilities?platform=（platform 必填，缺失 400）
+     * → { platform, qualities:{ flac24bit:bool, flac:bool, '320k':bool, '128k':bool },
+     *     sources:[{ id, name, qualities:string[] }] }
+     * 聚合 ready+enabled 音源；搜索合并视图据此灰显不可达音质档位（调用侧失败静默降级为不灰显）。
+     */
+    capabilities: (platform) => request(`/sources/capabilities${qs({ platform })}`),
   },
 
   // ---------- 5. 设置 ----------
@@ -189,6 +282,83 @@ export const api = {
     runSmoke: () => post('/health/smoke/run'),
   },
 
+  // ---------- P2 O1 结果内试听（音源直链流式代理） ----------
+  preview: {
+    /**
+     * 构造试听直链：GET /preview?platform=&songmid=&quality=&name=&singer=
+     * 成功 → 302 Location=音源直链（<audio> 自动跟随重定向；同源请求自动携带登录 Cookie）。
+     * quality 缺省 'flac'，合法档 128k/320k/flac/flac24bit。返回可直接作 audio.src 的绝对路径。
+     */
+    url: ({ platform, songmid, quality = 'flac', name, singer }) =>
+      BASE + `/preview${qs({ platform, songmid, quality, name, singer })}`,
+    /**
+     * 试听预检（不下载音频体）：以 redirect:'manual' 请求 preview 端点——
+     *   · 302 → 响应被过滤为 opaqueredirect（status 0），表示后端已定位到音源直链 → resolve(直链URL)；
+     *   · 直接 2xx（理论不发生，preview 成功走 302）→ 同样 resolve；
+     *   · 400/502/503/504 等 → 读结构化错误 { error:{ code, message } } 抛友好错误（reject）；
+     *   · 401 → 会话失效，与 request() 一致跳 login.html。
+     * manual 只影响 3xx 跟随，非 3xx 响应仍可正常读取 status/body，因此能精确区分成功与失败。
+     */
+    async check(params) {
+      const url = api.preview.url(params)
+      let resp
+      try {
+        resp = await fetch(url, { method: 'GET', redirect: 'manual', credentials: 'same-origin' })
+      } catch {
+        throw new Error('网络错误，无法连接试听服务')
+      }
+      if (resp.status === 401) {
+        location.href = 'login.html'
+        throw new Error('未授权')
+      }
+      // 302 成功：opaqueredirect（status 0，无法读 Location，但直链已由后端定位，交 audio 跟随）
+      if (resp.type === 'opaqueredirect' || resp.status === 0 || resp.ok) return url
+      const data = await resp.json().catch(() => ({}))
+      const code = data?.error?.code || ''
+      const e = new Error(previewErrMsg(resp.status, code, data?.error?.message))
+      e.status = resp.status
+      e.code = code
+      throw e
+    },
+  },
+
   // ---------- 7. 状态 ----------
   status: () => request('/status'),
+}
+
+// ---------- P0-A2：统一下载音质来源 ----------
+
+/** 缓存的 settings.download.defaultQuality（main.js 启动时经 initQualityCache 写入） */
+let _cachedDefaultQuality = null
+
+/**
+ * 启动时从 GET /settings 读取默认音质并缓存（main.js 调用一次）。
+ * P0 D4：/settings 实际返回嵌套结构 { auth, download:{ defaultQuality }, scrape, smokeTest }，
+ * 此前误读顶层 s.defaultQuality → 永远拿不到值，本回退分支为死代码、顶栏 #dl-quality 也无法播种。
+ * 失败静默（回退 'flac'）。
+ */
+export async function initQualityCache() {
+  try {
+    const s = await api.settings.get()
+    const q = s?.download?.defaultQuality
+    if (q) _cachedDefaultQuality = q
+  } catch {
+    /* 拿不到设置：回退 'flac' */
+  }
+  // 同步全局控件初始值（若 DOM 已就绪）
+  const sel = document.getElementById('dl-quality')
+  if (sel && _cachedDefaultQuality) sel.value = _cachedDefaultQuality
+}
+
+/**
+ * 统一下载音质读取（单一优先级）：
+ *   全局控件 #dl-quality > settings.download.defaultQuality 缓存 > 'flac'
+ *
+ * 替代原 home.js DL_QUALITY 硬编码 / playlists.js 跨页读 $('#quality')。
+ */
+export function getDownloadQuality() {
+  const sel = document.getElementById('dl-quality')
+  if (sel && sel.value) return sel.value
+  if (_cachedDefaultQuality) return _cachedDefaultQuality
+  return 'flac'
 }

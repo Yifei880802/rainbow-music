@@ -139,13 +139,40 @@ download:
   embedCover: true
   embedLyric: true
   coverSize: 500
+  onConflict: suffix
+  verifyIntegrity: true
+  detectRealQuality: true
+  dirTemplate: ""
+  dedupePolicy: skip
+  batchMaxItems: 200
+  resume: true
+  diskPrecheck: true
+  minFreeBytes: 104857600
 sources:
   dir: data/sources
   hotReload: true
+  healthAware: true
+  circuitThreshold: 5
+  circuitWindowMs: 300000
+  ratePerMin: 0
 rateLimit:
   enabled: true
   windowMs: 60000
   max: 300
+search:
+  timeoutMs: 8000
+  cacheTtlMs: 300000
+  defaultLimit: 30
+  platformWeights:
+    kw: 1
+    kg: 1
+    tx: 1.1
+    wy: 1
+    mg: 0.9
+  suggestPlatforms: [wy, tx, kg]
+  correctEnabled: true
+  correctMinResults: 3
+  relatedEnabled: true
 smokeTest:
   enabled: true
   cron: 0 6 * * *

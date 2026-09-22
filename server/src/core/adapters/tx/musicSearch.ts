@@ -41,7 +41,8 @@ interface TxRawItem {
 }
 
 export default {
-  limit: 50,
+  // D4：各平台默认 limit 统一为 30（原 tx=50，与 kw/kg/wy/mg 对齐；配置项 search.defaultLimit 同源）
+  limit: 30,
   successCode: 0,
 
   async musicSearch(str: string, page: number, limit: number, retryNum = 0): Promise<{ body: { item_song: TxRawItem[] }; meta: { estimate_sum: number } }> {

@@ -95,6 +95,10 @@ async function main(): Promise<ProbeOut> {
 }
 
 const result = await main()
-process.stdout.write(`@@PROBE@@${JSON.stringify(result)}\n`)
-// 强制退出：PATCH 可能触发 rescheduleSmoke() 挂上 node-cron 定时器，等自然退出会挂住测试
-process.exit(0)
+// 强制退出：PATCH 可能触发 rescheduleSmoke() 挂上 node-cron 定时器，等自然退出会挂住测试。
+// 但 process.exit 会截断尚未 flush 的管道写入（#191 加 search.platformWeights/suggestPlatforms
+// 后探针输出变大，触发「Unterminated string in JSON」截断）。故把 exit 放进 write 回调，
+// 确保整行 JSON 完整落盘后再退出（不削弱任何断言，仅修 flush 时序）。
+process.stdout.write(`@@PROBE@@${JSON.stringify(result)}\n`, () => {
+  process.exit(0)
+})

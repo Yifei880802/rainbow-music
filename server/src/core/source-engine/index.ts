@@ -21,6 +21,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export const QUALITY_FALLBACK: Quality[] = ['flac24bit', 'flac', '320k', '128k']
 
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
 interface PendingCall {
   resolve: (v: unknown) => void
   reject: (e: Error) => void
@@ -64,6 +66,35 @@ export class SourceEngine extends EventEmitter {
   private workers = new Map<string, WorkerBox>()
   private reloadTimer: NodeJS.Timeout | null = null
   private watcher: fs.FSWatcher | null = null
+
+  // ── L3 音源级令牌桶（按 sourceId 限速 callAction，防并发打爆上游风控）──
+  // 每个音源一个桶：tokens 可透支为负（负值代表排队等待量），按 ratePerMin 匀速回填。
+  // ratePerMin<=0（默认）时 acquireSourceToken 直接返回，与 L3 引入前行为完全一致。
+  private buckets = new Map<string, { tokens: number; last: number }>()
+
+  /**
+   * L3: 取一枚令牌，令牌不足则等待到可用为止（匀速放行）。
+   * 桶容量 = max(1, ceil(ratePerMin/6))，允许约 10s 突发量的瞬时并发，其后回归均速。
+   */
+  private async acquireSourceToken(sourceId: string): Promise<void> {
+    const ratePerMin = config.sources.ratePerMin ?? 0
+    if (!(ratePerMin > 0)) return // 0/负值/缺省 → 不限速
+    const now = Date.now()
+    const capacity = Math.max(1, Math.ceil(ratePerMin / 6))
+    let b = this.buckets.get(sourceId)
+    if (!b) {
+      b = { tokens: capacity, last: now }
+      this.buckets.set(sourceId, b)
+    }
+    // 匀速回填（不超过桶容量），再扣一枚；扣后为负即需等待
+    const refill = ((now - b.last) / 60_000) * ratePerMin
+    b.tokens = Math.min(capacity, b.tokens + refill) - 1
+    b.last = now
+    if (b.tokens < 0) {
+      const waitMs = (-b.tokens / ratePerMin) * 60_000
+      await sleep(waitMs)
+    }
+  }
 
   async start(): Promise<void> {
     await this.loadAll()
@@ -276,13 +307,16 @@ export class SourceEngine extends EventEmitter {
     })
   }
 
-  /** 底层 action 调用 */
-  private callAction(sourceId: string, platform: string, action: SourceAction, info: unknown, timeoutMs = 30_000): Promise<unknown> {
+  /** 底层 action 调用（L3: 入口按 sourceId 令牌桶限速后再下发 worker） */
+  private async callAction(sourceId: string, platform: string, action: SourceAction, info: unknown, timeoutMs = 30_000): Promise<unknown> {
     const box = this.workers.get(sourceId)
     const record = this.sources.get(sourceId)
-    if (!box || !record) return Promise.reject(new Error(`source not loaded: ${sourceId}`))
-    if (!record.enabled) return Promise.reject(new Error(`source disabled: ${sourceId}`))
-    if (record.status !== 'ready') return Promise.reject(new Error(`source not ready: ${sourceId} (${record.status})`))
+    if (!box || !record) throw new Error(`source not loaded: ${sourceId}`)
+    if (!record.enabled) throw new Error(`source disabled: ${sourceId}`)
+    if (record.status !== 'ready') throw new Error(`source not ready: ${sourceId} (${record.status})`)
+
+    // L3: 上游风控限速（ratePerMin<=0 时立即返回，不改变既有行为）
+    await this.acquireSourceToken(sourceId)
 
     const id = box.nextId++
     return new Promise((resolve, reject) => {

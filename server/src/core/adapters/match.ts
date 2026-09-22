@@ -34,13 +34,16 @@ type ScoredMusic = MusicInfo & {
 }
 
 const singersRxp = /、|&|;|；|\/|,|，|\|/
-function sortSingle(singer: string): string {
+// #191 J1：导出供 core/search 合并视图复用同一套归一化内核（多歌手排序消除顺序差异），
+// 不改变 findMusic 内部行为（仅加 export）。
+export function sortSingle(singer: string): string {
   return singersRxp.test(singer)
     ? singer.split(singersRxp).sort((a, b) => a.localeCompare(b)).join('、')
     : (singer || '')
 }
 
-function getIntv(interval: string | 0 | undefined): number {
+// #191 J1/J2：导出时长解析（mm:ss → 秒），供合并去重的 interval±5s 辅键与评分中位数偏差复用。
+export function getIntv(interval: string | 0 | undefined): number {
   if (!interval) return 0
   const intvArr = String(interval).split(':')
   let intv = 0

@@ -10,6 +10,7 @@ import { searchRoutes } from './routes/search.js'
 import { hotPlaylistsRoutes } from './routes/hotPlaylists.js'
 import { playlistSquareRoutes } from './routes/playlistSquare.js'
 import { downloadRoutes } from './routes/download.js'
+import { previewRoutes } from './routes/preview.js'
 import { playRoutes } from './routes/play.js'
 import { coverRoutes } from './routes/cover.js'
 import { lyricRoutes } from './routes/lyric.js'
@@ -99,6 +100,7 @@ async function buildApp(opts: BuildAppOptions) {
   await app.register(hotPlaylistsRoutes) // #60 热门歌单聚合（首页数据源）
   await app.register(playlistSquareRoutes) // #67 歌单广场聚合（wy/tx 轻量列表，详情复用 songlist/detail）
   await app.register(downloadRoutes)
+  await app.register(previewRoutes) // O1: 结果内试听（音源直链 302 代理）
   await app.register(playRoutes)
   await app.register(coverRoutes)
   await app.register(lyricRoutes)

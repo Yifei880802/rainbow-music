@@ -34,9 +34,42 @@ export interface RoConfig {
     batchActivationSize?: number     // 批量任务分批激活上限，默认 200
     tagWorkers?: number              // 元数据嵌入 worker 数，默认 clamp(floor(CPU/2), 1, 2)
     // ── #6 新增项结束 ──
+    // ── P0 下载数据安全 + 真实音质回写（B1/B2/C1）──
+    onConflict?: 'suffix' | 'overwrite' | 'skip'  // 同名文件冲突策略，默认 suffix（追加 (1)(2)…）
+    verifyIntegrity?: boolean                      // 下载完整性校验（received vs content-length），默认 true
+    detectRealQuality?: boolean                    // 下载后 parseFile 读取真实码率/格式，默认 true
+    // ── P1 下载引擎强化（F2/G1/H5，全部可选；yaml 未提供时代码侧用默认值）──
+    dirTemplate?: string                           // 落盘子目录模板（G1），默认 ''=平铺；支持 {singer}/{album}/{singerFirstLetter} 等占位符
+    dedupePolicy?: 'skip' | 'replace' | 'always-new' // 入队去重策略（H5），默认 skip（同曲同音质在途/已完成时复用既有任务）
+    batchMaxItems?: number                         // 批量入队单次上限（H1/H5），默认 200
+    resume?: boolean                               // 断点续传（F2），默认 true（.tmp-{taskId} 持久化 + Range 续传）
+    // ── P2 性能细项（N3，全部可选；yaml 未提供时代码侧用默认值）──
+    diskPrecheck?: boolean                         // N3: enqueue 前磁盘空间预检开关，默认 true（不足抛 ERR_DISK_FULL 拒绝入队）
+    minFreeBytes?: number                          // N3: 最小可用磁盘字节数，默认 104857600（100MB）
   }
-  sources: { dir: string; hotReload: boolean }
+  sources: {
+    dir: string
+    hotReload: boolean
+    // ── P2 音源健康编排与限速（L1/L2/L3，全部可选；yaml 未提供时代码侧用默认值）──
+    healthAware?: boolean       // L1: 按 smoke_results 近期成功率对候选音源排序（全失败源降权），默认 true
+    circuitThreshold?: number   // L2: 同一音源窗口内连续失败 ≥K 次即熔断临时剔除，默认 5
+    circuitWindowMs?: number    // L2: 熔断统计滑动窗口（ms），默认 300000（5min）
+    ratePerMin?: number         // L3: 每音源每分钟 callAction 上限（0=不限速），默认 0；与全局 rateLimit 协同
+  }
   rateLimit: { enabled: boolean; windowMs: number; max: number }
+  // ── P0 搜索基础设施（D2/D3/D4，全部可选；yaml 未提供时代码侧用默认值，见 core/search/*）──
+  search?: {
+    timeoutMs?: number      // /search/aggregate 单次聚合整体超时（ms），默认 8000
+    cacheTtlMs?: number     // 聚合/联想结果内存缓存 TTL（ms），默认 300000（5min）
+    defaultLimit?: number   // 各平台搜索默认返回条数，默认 30（统一 tx/mg 原 50/20）
+    // ── P1 搜索后端 J（#191，全部可选）──
+    platformWeights?: Record<string, number> // J2 相关度评分的平台权重（乘数），默认 { kw:1,kg:1,tx:1.1,wy:1,mg:0.9 }
+    suggestPlatforms?: string[]              // D2 联想标题池取榜平台，默认 ['wy','tx','kg']
+    // ── P2 搜索高阶 O4/O5（#200，全部可选；默认值向后兼容）──
+    correctEnabled?: boolean   // O4 错字容错开关，默认 true（结果过少时返回纠错建议，不自动替换用户原词）
+    correctMinResults?: number // O4 触发纠错的结果数阈值，默认 3（聚合结果条数 < 此值时尝试纠错）
+    relatedEnabled?: boolean   // O5 相关推荐开关，默认 true（/search/related 共现推荐；冷启动回退 trending）
+  }
   // ── #45 自动刮削（全部可选；yaml 未提供时代码侧用默认值，见 scrape.ts 的 scrapeConfig()）──
   scrape?: {
     enabled?: boolean        // 总开关（false 时零行为变化），默认 true
@@ -128,9 +161,35 @@ function buildDefaultConfig(password?: string): RoConfig {
       embedCover: true,
       embedLyric: true,
       coverSize: 500,
+      onConflict: 'suffix',
+      verifyIntegrity: true,
+      detectRealQuality: true,
+      dirTemplate: '',
+      dedupePolicy: 'skip',
+      batchMaxItems: 200,
+      resume: true,
+      diskPrecheck: true,
+      minFreeBytes: 104857600,
     },
-    sources: { dir: 'data/sources', hotReload: true },
+    sources: {
+      dir: 'data/sources',
+      hotReload: true,
+      healthAware: true,
+      circuitThreshold: 5,
+      circuitWindowMs: 300000,
+      ratePerMin: 0,
+    },
     rateLimit: { enabled: true, windowMs: 60000, max: 300 },
+    search: {
+      timeoutMs: 8000,
+      cacheTtlMs: 300000,
+      defaultLimit: 30,
+      platformWeights: { kw: 1, kg: 1, tx: 1.1, wy: 1, mg: 0.9 },
+      suggestPlatforms: ['wy', 'tx', 'kg'],
+      correctEnabled: true,
+      correctMinResults: 3,
+      relatedEnabled: true,
+    },
     scrape: {
       enabled: true,
       autoOnComplete: true,

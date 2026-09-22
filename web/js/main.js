@@ -3,8 +3,10 @@
  * 各页面拆为独立 ES 模块（pages/*.js），按需懒初始化
  */
 import { $, $$, escapeHtml, toast } from './ui.js'
-import { api, API_BASE } from './api.js'
+import { api, API_BASE, initQualityCache } from './api.js'
 import { store, initUid, currentUser, resetUid } from './storage.js'
+import * as sse from './sse.js'
+import { subscribeTaskEvents, isBusy, isDone } from './download-state.js'
 import * as searchPage from './pages/search.js'
 import * as homePage from './pages/home.js'
 import * as libraryPage from './pages/library.js'
@@ -379,7 +381,87 @@ async function initGatewayHealthBanner() {
   box.hidden = false
 }
 
+/* ============================================================
+   P1-I1 · 全局下载指示器（顶栏 pill）
+   - 复用全局 SSE 单连接，汇总所有 task 事件维护 active/failed/total 计数
+   - #196-fix1: 「进行中 N」用 /status 的 live 量（pending+active）；
+     「失败 M」用本会话 SSE 观测到的 task:failed 计数（非累计）；
+     无活跃下载时隐藏 pill；总进度按活跃批次算。
+   ============================================================ */
+function initDownloadIndicator() {
+  const pill = $('#dl-ind')
+  const txt = $('#dl-ind-txt')
+  const bar = $('#dl-ind-bar')
+  if (!pill || !txt) return
+
+  let active = 0       // pending + active（live 量，来自 /status）
+  let sessionFailed = 0 // 本会话 SSE 观测到的 task:failed 计数（非累计）
+  let sessionCompleted = 0 // 本会话 SSE 观测到的 task:completed 计数
+  let sessionTotal = 0   // 本会话活跃批次总量（active + sessionCompleted + sessionFailed）
+
+  function render() {
+    if (!active && !sessionFailed) {
+      pill.hidden = true
+      return
+    }
+    pill.hidden = false
+    pill.classList.toggle('has-active', active > 0)
+    pill.classList.toggle('has-failed', sessionFailed > 0)
+    const parts = []
+    if (active) parts.push(`↓ ${active}`)
+    if (sessionFailed) parts.push(`✗ ${sessionFailed}`)
+    sessionTotal = active + sessionCompleted + sessionFailed
+    if (sessionTotal > 0 && sessionCompleted > 0) {
+      const pct = Math.round((sessionCompleted / sessionTotal) * 100)
+      parts.push(`${pct}%`)
+    }
+    txt.textContent = parts.join(' · ')
+    if (bar) {
+      const fill = bar.querySelector('i')
+      if (fill) fill.style.width = sessionTotal > 0 ? `${Math.round((sessionCompleted / sessionTotal) * 100)}%` : '0%'
+    }
+  }
+
+  /** 从 GET /api/v1/status 拉取 live 计数对账（#196-fix1: 读 st.tasks 而非 st.queue） */
+  async function pollStatus() {
+    try {
+      const st = await api.status()
+      // 后端契约：{ tasks: { pending, active, completed, failed }, activationBuffer, queuePaused }
+      const t = st.tasks || {}
+      active = (t.pending || 0) + (t.active || 0)
+      render()
+    } catch { /* 静默：无权限或服务未就绪 */ }
+  }
+
+  // SSE task 事件驱动增量计数（会话级）
+  subscribeTaskEvents(sse, (view) => {
+    if (!view) return
+    if (view.status === 'failed' || view.status === 'canceled') {
+      sessionFailed++
+    } else if (view.status === 'completed' || view.status === 'completed_with_warnings') {
+      sessionCompleted++
+    }
+    // 统一策略：每次事件都重新拉 status（节流 800ms）
+    schedulePollStatus()
+  })
+
+  let pollTimer = null
+  function schedulePollStatus() {
+    if (pollTimer) return
+    pollTimer = setTimeout(() => {
+      pollTimer = null
+      pollStatus()
+    }, 800)
+  }
+
+  sse.on('connected', pollStatus)
+  // 初始拉取
+  pollStatus()
+}
+
 initAuth()
 initGatewayHealthBanner() // v0.2.12：网关注册诊断横幅（异步，不阻塞首屏）
+initQualityCache() // P0-A2：从 settings 同步全局音质控件初始值（异步，不阻塞首屏）
+initDownloadIndicator() // P1-I1：全局下载指示器（SSE 驱动，异步不阻塞）
 player.init() // 底部播放器（默认隐藏，本地收藏点 ▶ 后滑入）
 showTab('home') // #60：登录后默认落首页（热门歌单聚合）

@@ -43,8 +43,27 @@ export interface DownloadTaskRow {
   scrape_status: ScrapeStatus
   /** 刮削详情 JSON：{attempts,error,warnings[],matched,fieldsWritten[],source,degraded,scrapedAt} */
   scrape_info: string | null
+  /** C1: music-metadata parseFile 读取的真实码率 (bps) */
+  actual_bitrate: number | null
+  /** C1: music-metadata parseFile 读取的真实编码格式 (如 'FLAC', 'MP3') */
+  actual_codec: string | null
+  /** C1: music-metadata parseFile 读取的真实采样率 (Hz) */
+  actual_sample_rate: number | null
+  /** H1: 批量入队批次 id（UUID；单首入队为 null） */
+  batch_id: string | null
   created_at: number
   updated_at: number
+}
+
+/** P2 M2: download_attempts 一行（每次换源/降级/重试尝试的审计轨迹） */
+export interface DownloadAttemptRow {
+  task_id: string
+  attempt_no: number
+  source_id: string
+  platform: string
+  quality: string
+  error_code: string | null
+  ts: number
 }
 
 let db: Database.Database
@@ -139,6 +158,21 @@ export function initDb(): Database.Database {
       created_at INTEGER NOT NULL,
       UNIQUE(uid, kind, ref)
     );
+    -- ── P0 搜索基础设施 D1：搜索历史表（跨设备同步的“我搜过什么”）──
+    -- 复用 play_history 范式：id 自增 PK、uid TEXT（网关数字 uid 转字符串；本地模式 'legacy'）、
+    -- ts 为写入时间戳（去重置顶时刷新）。store 层按 uid 封顶 200 条（见 core/db/searchHistory.ts）。
+    -- type/platform 为可选上下文（搜索类型与平台），缺省空串。
+    CREATE TABLE IF NOT EXISTS search_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uid TEXT NOT NULL,
+      kw TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL DEFAULT '',
+      ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sh_uid_ts ON search_history(uid, ts DESC);
+    -- 热搜聚合（D3 trending / D2 suggest 全局源）按 kw 分组统计频次，加 kw 索引避免全表扫
+    CREATE INDEX IF NOT EXISTS idx_sh_kw ON search_history(kw);
     -- 歌单两表（含 user_id 归属列的最新定义；此处为权威 DDL，
     -- core/db/playlists.ts 的 ensureTables 仅作防御性兑底，不再建表）
     CREATE TABLE IF NOT EXISTS playlists (
@@ -164,6 +198,32 @@ export function initDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_pitems_playlist ON playlist_items(playlist_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_pitems_uniq ON playlist_items(playlist_id, platform, songmid);
+    -- ── P2 M2 下载审计：每次「换源/降级/重试」尝试写一条，前端「为什么失败」可展开。
+    -- 幂等 CREATE IF NOT EXISTS，非破坏（不动 ro.db 既有表）；attempt_no 为队列重试轮次（从 1 起），
+    -- 同一轮内跨音源/跨音质的多次尝试共享同一 attempt_no，以 ts/id 升序呈现。
+    CREATE TABLE IF NOT EXISTS download_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      attempt_no INTEGER NOT NULL,
+      source_id TEXT NOT NULL DEFAULT '',
+      platform TEXT NOT NULL DEFAULT '',
+      quality TEXT NOT NULL DEFAULT '',
+      error_code TEXT,
+      ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_attempts_task ON download_attempts(task_id, ts);
+    -- ── P2 O5（#200）搜索共现表：「搜过 X 的人也搜 Y」全局共现统计。
+    -- 幂等 CREATE IF NOT EXISTS，非破坏（不动 ro.db 既有表）。存双向对 (a,b)+(b,a)，
+    -- 使邻居查询按 a=? 命中索引即 O(logN)；count 为共现累计次数，ts 为最近一次共现时间。
+    -- 写入时机：search_history 写入时（同一 uid 时间相邻、30min 窗口内的不同搜索词对），见 core/db/searchHistory.ts。
+    CREATE TABLE IF NOT EXISTS search_cooccurrence (
+      a TEXT NOT NULL,
+      b TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 1,
+      ts INTEGER NOT NULL,
+      PRIMARY KEY (a, b)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cooc_a ON search_cooccurrence(a, count DESC);
   `)
   // 安全迁移：旧库缺 requeue_count 列时补列（PRAGMA table_info 检测后 ALTER）
   const cols = db.pragma('table_info(download_tasks)') as { name: string }[]
@@ -181,6 +241,25 @@ export function initDb(): Database.Database {
     db.exec(`ALTER TABLE download_tasks ADD COLUMN scrape_info TEXT`)
     logger.info('[db] migrated: added column download_tasks.scrape_info')
   }
+  // ── P0 C2: 真实音质回写列（music-metadata parseFile 读取后写入，供 SSE task:completed 推送前端）──
+  if (!cols.some((c) => c.name === 'actual_bitrate')) {
+    db.exec(`ALTER TABLE download_tasks ADD COLUMN actual_bitrate INTEGER`)
+    logger.info('[db] migrated: added column download_tasks.actual_bitrate')
+  }
+  if (!cols.some((c) => c.name === 'actual_codec')) {
+    db.exec(`ALTER TABLE download_tasks ADD COLUMN actual_codec TEXT`)
+    logger.info('[db] migrated: added column download_tasks.actual_codec')
+  }
+  if (!cols.some((c) => c.name === 'actual_sample_rate')) {
+    db.exec(`ALTER TABLE download_tasks ADD COLUMN actual_sample_rate INTEGER`)
+    logger.info('[db] migrated: added column download_tasks.actual_sample_rate')
+  }
+  // ── P1 H1: 批量下载批次列（/download/batch 入队时写入 UUID；存量行 NULL=非批量）──
+  if (!cols.some((c) => c.name === 'batch_id')) {
+    db.exec(`ALTER TABLE download_tasks ADD COLUMN batch_id TEXT`)
+    logger.info('[db] migrated: added column download_tasks.batch_id')
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_tasks_batch ON download_tasks(batch_id)`)
   // ── v0.2.1 多用户迁移（模块一）：存量表补归属列（PRAGMA 检测幂等；
   // 默认 'legacy' → v0.2.0 存量数据自动归属本地 admin，本地模式行为零变化）──
   // requested_by 纯预留（可空、不写值），供后续下载任务归属增强使用。
@@ -246,7 +325,9 @@ const COLUMNS = [
   'id', 'keyword_source', 'platform', 'songmid', 'name', 'singer', 'album',
   'requested_quality', 'actual_quality', 'actual_source', 'music_info',
   'status', 'progress', 'file_path', 'file_size', 'warnings', 'error',
-  'requeue_count', 'scrape_status', 'scrape_info', 'created_at', 'updated_at',
+  'requeue_count', 'scrape_status', 'scrape_info',
+  'actual_bitrate', 'actual_codec', 'actual_sample_rate', 'batch_id',
+  'created_at', 'updated_at',
 ] as const
 
 export const taskStore = {
@@ -268,17 +349,120 @@ export const taskStore = {
     return getDb().prepare('SELECT * FROM download_tasks WHERE id = ?').get(id) as DownloadTaskRow | undefined
   },
 
-  list(opts: { status?: TaskStatus; limit?: number; offset?: number } = {}): DownloadTaskRow[] {
-    const where = opts.status ? 'WHERE status = @status' : ''
+  list(opts: { status?: TaskStatus; batchId?: string; limit?: number; offset?: number } = {}): DownloadTaskRow[] {
+    // H4: 动态 WHERE（status / batch_id 均可选）；参数对象未提供的键为 undefined，
+    // better-sqlite3 对未被 SQL 引用的命名参数不报错，无需逐条拼接参数
+    const conds: string[] = []
+    if (opts.status) conds.push('status = @status')
+    if (opts.batchId) conds.push('batch_id = @batchId')
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : ''
     const limit = opts.limit ?? 100
     const offset = opts.offset ?? 0
     return getDb()
       .prepare(`SELECT * FROM download_tasks ${where} ORDER BY created_at DESC LIMIT @limit OFFSET @offset`)
-      .all({ status: opts.status, limit, offset }) as DownloadTaskRow[]
+      .all({ status: opts.status, batchId: opts.batchId, limit, offset }) as DownloadTaskRow[]
+  },
+
+  /** #196-fix2: 轻量 owned 端点数据源——全部终态任务（completed/completed_with_warnings/failed），仅含 owned 判定所需字段，无分页 */
+  listOwned(): { id: string; platform: string; songmid: string; status: TaskStatus; requested_quality: string; file_path: string | null }[] {
+    return getDb()
+      .prepare(
+        `SELECT id, platform, songmid, status, requested_quality, file_path
+         FROM download_tasks
+         WHERE status IN ('completed','completed_with_warnings','failed')
+         ORDER BY updated_at DESC`,
+      )
+      .all() as ReturnType<typeof taskStore.listOwned>
+  },
+
+  /** H4/H3: 按状态计数（status 缺省计全部；/status 面板与队列状态端点数据源） */
+  count(status?: TaskStatus): number {
+    const row = (status
+      ? getDb().prepare('SELECT COUNT(*) AS n FROM download_tasks WHERE status = ?').get(status)
+      : getDb().prepare('SELECT COUNT(*) AS n FROM download_tasks').get()) as { n: number }
+    return row.n
+  },
+
+  /** H1: 批次汇总列表（按批次内最新活动时间倒序） */
+  listBatches(): { batch_id: string; total: number; pending: number; active: number; completed: number; failed: number; canceled: number; created_at: number; updated_at: number }[] {
+    return getDb()
+      .prepare(
+        `SELECT batch_id,
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN status IN ('completed','completed_with_warnings') THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+                SUM(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
+                MIN(created_at) AS created_at,
+                MAX(updated_at) AS updated_at
+         FROM download_tasks WHERE batch_id IS NOT NULL
+         GROUP BY batch_id ORDER BY MAX(updated_at) DESC`,
+      )
+      .all() as ReturnType<typeof taskStore.listBatches>
+  },
+
+  /** H1: 整批取消（仅 pending/active 可取消；返回实际取消数） */
+  cancelBatch(batchId: string): number {
+    const r = getDb()
+      .prepare(`UPDATE download_tasks SET status = 'canceled', updated_at = ? WHERE batch_id = ? AND status IN ('pending','active')`)
+      .run(Date.now(), batchId)
+    return r.changes
+  },
+
+  /** H5: 去重查找——同 (platform, songmid, requested_quality) 的在途/已完成任务（canceled/failed 不算） */
+  findDuplicate(platform: string, songmid: string, quality: string): DownloadTaskRow | undefined {
+    return getDb()
+      .prepare(
+        `SELECT * FROM download_tasks
+         WHERE platform = ? AND songmid = ? AND requested_quality = ?
+           AND status IN ('pending','active','completed','completed_with_warnings')
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(platform, songmid, quality) as DownloadTaskRow | undefined
+  },
+
+  /** H2: download-missing 用——同 (platform, songmid) 是否已有带落盘文件的完成任务 */
+  findCompletedWithFile(platform: string, songmid: string): DownloadTaskRow | undefined {
+    return getDb()
+      .prepare(
+        `SELECT * FROM download_tasks
+         WHERE platform = ? AND songmid = ?
+           AND status IN ('completed','completed_with_warnings')
+           AND file_path IS NOT NULL AND file_path != ''
+         ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(platform, songmid) as DownloadTaskRow | undefined
   },
 
   delete(id: string): void {
     getDb().prepare('DELETE FROM download_tasks WHERE id = ?').run(id)
+    // M2: 级联清理审计轨迹（避免孤儿 attempts 无限累积）
+    getDb().prepare('DELETE FROM download_attempts WHERE task_id = ?').run(id)
+  },
+
+  /** M2: 批量写入一个重试轮次的全部尝试轨迹（单事务） */
+  insertAttempts(rows: DownloadAttemptRow[]): void {
+    if (rows.length === 0) return
+    const d = getDb()
+    const stmt = d.prepare(
+      `INSERT INTO download_attempts (task_id, attempt_no, source_id, platform, quality, error_code, ts)
+       VALUES (@task_id, @attempt_no, @source_id, @platform, @quality, @error_code, @ts)`,
+    )
+    const tx = d.transaction((list: DownloadAttemptRow[]) => {
+      for (const r of list) stmt.run(r)
+    })
+    tx(rows)
+  },
+
+  /** M2: 某任务的全部尝试轨迹（按 ts/id 升序，GET /tasks/:id/attempts 数据源） */
+  listAttempts(taskId: string): DownloadAttemptRow[] {
+    return getDb()
+      .prepare(
+        `SELECT task_id, attempt_no, source_id, platform, quality, error_code, ts
+         FROM download_attempts WHERE task_id = ? ORDER BY ts ASC, id ASC`,
+      )
+      .all(taskId) as DownloadAttemptRow[]
   },
 
   /**

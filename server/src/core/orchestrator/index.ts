@@ -12,9 +12,11 @@
  * 命中即返回，并记录：实际音源 id、实际音质。
  */
 import { sourceEngine, QUALITY_FALLBACK } from '../source-engine/index.js'
+import { computeSourceHealth, orderByHealth, filterCircuitOpen, sourceCircuit } from '../source-engine/source-health.js'
 import type { Quality } from '../source-engine/lx-env.js'
 import { findMusic } from '../adapters/match.js'
 import type { MusicInfo } from '../adapters/common.js'
+import { config } from '../config.js'
 import { logger } from '../logger.js'
 
 /**
@@ -40,6 +42,7 @@ export interface ResolveResult {
   platform: string // 实际命中的平台（换源后可能不同于请求）
   musicInfo: unknown // 实际命中的歌曲对象（换源后为其它平台的版本）
   toggled: boolean // 是否通过跨平台换源命中（洛雪 toggleSource 行为）
+  qualityDegraded: boolean // C3: 实际音质是否低于请求音质（降级透明化）
 }
 
 export interface ResolveAttempt {
@@ -74,6 +77,11 @@ export interface ResolveOptions {
 /**
  * 决定候选音源顺序：主音源在前，其余 ready 且启用的音源在后。
  * 仅纳入「声明支持该平台」的音源。
+ *
+ * L1/L2: 得到基础顺序后（且 sources.healthAware !== false），叠加两道音源质量闸门：
+ *   - L2 熔断剔除：窗口内连续失败达阈值的音源移出候选（全部熔断时回退原候选，half-open 再试）；
+ *   - L1 健康排序：近 N 次冒烟全失败的音源降到候选末尾，优先跑健康音源。
+ * 单候选（length<=1）时排序无意义，但仍走熔断判定（filterCircuitOpen 对全熔断回退，安全）。
  */
 function resolveSourceOrder(platform: string, primarySourceId?: string, explicit?: string[]): string[] {
   const all = sourceEngine
@@ -81,15 +89,19 @@ function resolveSourceOrder(platform: string, primarySourceId?: string, explicit
     .filter((s) => s.status === 'ready' && s.enabled && s.sources[platform])
     .map((s) => s.id)
 
+  let base: string[]
   if (explicit && explicit.length) {
     // 仅保留有效的（存在且支持该平台）
-    return explicit.filter((id) => all.includes(id))
+    base = explicit.filter((id) => all.includes(id))
+  } else if (primarySourceId && all.includes(primarySourceId)) {
+    base = [primarySourceId, ...all.filter((id) => id !== primarySourceId)]
+  } else {
+    base = all
   }
 
-  if (primarySourceId && all.includes(primarySourceId)) {
-    return [primarySourceId, ...all.filter((id) => id !== primarySourceId)]
-  }
-  return all
+  if (config.sources.healthAware === false) return base
+  const health = computeSourceHealth()
+  return filterCircuitOpen(orderByHealth(base, health))
 }
 
 /** 某音源某平台实际支持的音质集合 */
@@ -120,11 +132,13 @@ async function resolveForPlatform(
         // 因为跨音源的降级次序由编排器统一掌控。
         const url = await sourceEngine.getMusicUrlExact(sourceId, platform, musicInfo, q)
         attempts.push({ quality: q, sourceId, ok: true, platform, toggled })
+        sourceCircuit.recordSuccess(sourceId) // L2: 命中即清零该源连续失败计数（关闭熔断）
         logger.info({ platform, quality: q, sourceId, toggled }, '[orchestrator] hit')
-        return { url, quality: q, sourceId, platform, musicInfo, toggled }
+        return { url, quality: q, sourceId, platform, musicInfo, toggled, qualityDegraded: q !== qualityChain[0] }
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err)
         attempts.push({ quality: q, sourceId, ok: false, error, platform, toggled })
+        sourceCircuit.recordFailure(sourceId) // L2: 累计窗口内失败，达阈值后 resolveSourceOrder 临时剔除该源
         logger.warn({ platform, quality: q, sourceId, error, toggled }, '[orchestrator] miss, try next source')
       }
     }

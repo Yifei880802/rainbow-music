@@ -86,6 +86,23 @@
           <input type="text" id="topbar-search" placeholder="搜索歌曲、歌手…" autocomplete="off" aria-label="全局搜索" />
           <kbd class="ts-kbd" aria-hidden="true">/</kbd>
         </form>
+        <!-- P0-A2：全局下载音质控件（单一来源，替代 home 硬编码 / playlists 跨页读搜索视图 #quality）
+             优先级：本控件 > settings.defaultQuality > 'flac'；main.js 启动时从 settings 同步初始值 -->
+        <div class="topbar-quality" id="topbar-quality-box" title="下载音质">
+          <svg class="tq-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8.5M5 7.5l3 3 3-3M3 13h10"/></svg>
+          <select id="dl-quality" aria-label="下载音质">
+            <option value="flac24bit">Hi-Res</option>
+            <option value="flac" selected>无损</option>
+            <option value="320k">320k</option>
+            <option value="128k">128k</option>
+          </select>
+        </div>
+        <!-- P1-I1：全局下载指示器 pill（SSE 驱动；无活动时隐藏）——位于音质控件与用户徽章之间 -->
+        <div class="topbar-dl-ind" id="dl-ind" hidden title="下载队列状态">
+          <svg class="dl-ind-ico" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M5 7l3 3 3-3M3 12.5h10"/></svg>
+          <span class="dl-ind-txt" id="dl-ind-txt"></span>
+          <span class="dl-ind-bar" id="dl-ind-bar" aria-hidden="true"><i></i></span>
+        </div>
         <!-- v0.2.1 模块六：顶栏用户身份徽章（usr-* 新命名空间；点击展开账号菜单：
              用户名/uid/登出；uid='legacy' 本地模式显示 admin 与 /me.username 一致；
              不动搜索 pill 与导航结构（契约 A）） -->
@@ -221,6 +238,14 @@
               <option value="128k">128k</option>
             </select>
             <button type="submit">搜索</button>
+            <!-- #193 P1 J4：结果视图切换（胶囊二段，.lib-view-seg 同语系）。
+                 「按平台分组」= 既有 renderAggregate 分组渲染（默认；旧 dist 无 /search/merged 也不影响可用性）；
+                 「按歌曲聚合」= renderMerged 消费 GET /search/merged（跨平台去重 + sources[] 折叠展开）。
+                 切换走本地重渲染/缓存复用，不丢失关键词·页码·勾选态；歌单搜索时由 JS 隐藏。 -->
+            <div class="search-view-seg" id="search-view-seg" role="group" aria-label="搜索结果视图切换">
+              <button id="search-view-group" type="button" class="on" aria-pressed="true" title="按平台分组（默认）">按平台分组</button>
+              <button id="search-view-merged" type="button" aria-pressed="false" title="按歌曲聚合（跨平台去重合并，可展开看全部来源）">按歌曲聚合</button>
+            </div>
           </form>
 
           <div class="toolbar" id="search-toolbar" hidden>
@@ -228,10 +253,33 @@
             <span id="selected-count">已选 0 首</span>
             <button id="batch-download" disabled>批量下载选中</button>
             <button id="batch-add-playlist" disabled>加入歌单</button>
+            <!-- #193 P1 K2：排序（纯前端渲染前 sort；相关度 = 合并视图 MergedTrack.score 降序 / 分组视图后端已排序原序） -->
+            <div class="search-sort-box" role="group" aria-label="搜索结果排序">
+              <select id="search-sort" aria-label="排序方式" title="排序方式">
+                <option value="relevance" selected>相关度</option>
+                <option value="duration">时长</option>
+                <option value="quality">音质</option>
+                <option value="platform">平台</option>
+              </select>
+            </div>
+            <span id="search-filter-summary" class="search-filter-summary"></span>
           </div>
 
+          <!-- #193 P1 K1：筛选 chips（来源/音质/歌手/专辑；复用 library.js #lib-filters 的 .lf-label/.lf-sep/.lib-chip 范式，
+               组内单选、再点同项取消、计数基数排除本组已选；对当前视图结果前端过滤，JS 控制显隐） -->
+          <div class="lib-filters search-filters" id="search-filters" hidden></div>
+
           <div id="search-status" class="status"></div>
+
+          <!-- #201 P2 O4：错字容错建议条（结果稀疏且响应含 corrected 时 JS 展示；
+               后端不自动替换原词——当前结果=用户原词(correctedFrom)，corrected 为建议改搜词） -->
+          <div id="search-correct" class="search-correct" role="status" aria-live="polite" hidden></div>
+
           <div id="results"></div>
+
+          <!-- #201 P2 O5：相关推荐 chips（歌曲搜索完成后拉 /search/related 渲染；点击即以该词发起搜索；
+               端点失败/空数组静默降级不展示） -->
+          <div id="search-related" class="search-related" hidden></div>
         </section>
 
         <!-- 本地收藏（已下载曲库 + 下载队列） -->
@@ -330,6 +378,30 @@
               <h3>下载队列</h3>
               <span id="queue-summary" class="queue-summary"></span>
             </div>
+            <!-- P1-I1：队列聚合进度条 -->
+            <div class="queue-agg" id="queue-agg">
+              <div class="queue-agg-bar"><i id="queue-agg-fill"></i></div>
+              <span class="queue-agg-txt" id="queue-agg-txt"></span>
+            </div>
+            <!-- P1-I2：队列批量操作 + 暂停/恢复 -->
+            <div class="queue-batch-ops" id="queue-batch-ops">
+              <button type="button" id="q-pause-resume" class="q-op-btn" title="暂停/恢复队列">
+                <svg class="q-op-ico pause" viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true"><rect x="2" y="1.5" width="3" height="9" rx="0.8"/><rect x="7" y="1.5" width="3" height="9" rx="0.8"/></svg>
+                <svg class="q-op-ico resume" viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z"/></svg>
+                <span id="q-pause-label">暂停</span>
+              </button>
+              <button type="button" id="q-cancel-all" class="q-op-btn" title="取消所有进行中任务">全部取消</button>
+              <button type="button" id="q-retry-all" class="q-op-btn" title="重试所有失败/取消任务">全部重试</button>
+              <button type="button" id="q-clear-failed" class="q-op-btn danger-lite" title="删除所有失败/取消任务">清空失败</button>
+            </div>
+            <!-- P1-I2：队列状态筛选 chips -->
+            <div class="queue-filter-chips" id="queue-filter-chips">
+              <button class="qf-chip active" data-qf="all" type="button">全部</button>
+              <button class="qf-chip" data-qf="pending" type="button">等待中</button>
+              <button class="qf-chip" data-qf="active" type="button">下载中</button>
+              <button class="qf-chip" data-qf="failed" type="button">失败</button>
+              <button class="qf-chip" data-qf="canceled" type="button">已取消</button>
+            </div>
             <div id="library-queue-list"></div>
           </section>
         </section>
@@ -422,6 +494,10 @@
         <svg class="np-cover-note" viewBox="0 0 24 24" width="54" height="54"><path d="M9 18V6l10-2v11.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="18" r="2.5" fill="currentColor"/><circle cx="16.5" cy="15.5" r="2.5" fill="currentColor"/></svg>
         <img id="np-cover" class="np-cover-img" alt="" hidden />
       </div>
+      <!-- P2 O2：面板封面右下角收藏心形（与底部播放条 #pb-fav 同一份状态，双向同步） -->
+      <button id="np-fav" class="row-fav np-fav" type="button" aria-pressed="false" aria-label="收藏到「我喜欢」" title="收藏到「我喜欢」" disabled>
+        <svg class="ic-heart" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      </button>
     </div>
     <h2 id="np-title" class="np-title">未在播放</h2>
     <p id="np-artist" class="np-artist">从「本地收藏」选一首开始吧</p>
@@ -462,6 +538,11 @@
         <div id="pb-title" class="pb-title">未在播放</div>
         <div id="pb-artist" class="pb-artist"></div>
       </div>
+      <!-- P2 O2：收藏到「我喜欢」（与搜索行心形同一份状态，favorites.js 驱动；
+           NAS 扫描曲无 platform/songmid → 禁用降级，不伪造 ref） -->
+      <button id="pb-fav" class="pb-mode pb-fav" type="button" aria-pressed="false" aria-label="收藏到「我喜欢」" title="收藏到「我喜欢」" disabled>
+        <svg class="ic-heart" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+      </button>
     </div>
 
     <div class="pb-center">

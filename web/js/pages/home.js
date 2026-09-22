@@ -29,10 +29,20 @@
  *   失败 toast + 详情区错误占位可重试，不阻塞其它卡片
  */
 import { $, $$, escapeHtml, toast, PLATFORM_NAME, confirmModal } from '../ui.js'
-import { api } from '../api.js'
+import { api, getDownloadQuality } from '../api.js'
 import * as sse from '../sse.js'
 import * as player from '../player.js'
 import { store } from '../storage.js'
+import {
+  isDone as isDoneT,
+  isBusy as isBusyT,
+  mergeOwned,
+  buildOwnedMap,
+  stateButtonHtml,
+  updateRingProgress,
+  subscribeTaskEvents,
+  dedupeItems,
+} from '../download-state.js'
 
 const CACHE_KEY = 'hot-playlists' // storage.js 自动加 rainbow.<uid>. 前缀（v0.2.1 多账号隔离）
 const CACHE_TTL = 24 * 60 * 60 * 1000 // 24h
@@ -44,7 +54,6 @@ const CACHE_TTL = 24 * 60 * 60 * 1000 // 24h
 const CACHE_VERSION = 2
 const ERRORS_RETRY_TTL = 5 * 60 * 1000 // errors 平台 5min 短 TTL 重试
 const RENDER_CHUNK = 30 // 详情首屏行数（「加载更多」分块）
-const DL_QUALITY = 'flac' // 榜单下载音质（与搜索页默认档一致）
 const TAB_KEY = 'hpTab' // #62 P1：平台分组 tab 记忆（storage.js uid 前缀）
 const SCROLL_KEY = 'hpScrollY' // #62 P1：详情返回滚动位置（store.session，会话内）
 const TAB_PLATFORMS = ['all', 'wy', 'tx', 'kg', 'kw', 'mg'] // 分组 tab：全部/网易云/QQ/酷狗/酷我/咪咕
@@ -104,39 +113,31 @@ function greetWord() {
 const isToday = (pl) => pl.updateTime === todayStr()
 
 // ---------- #69 详情行三态（ownedMap / SSE 联动 / 直接播放） ----------
-
-/** 任务终态（可播） */
-const isDoneT = (t) => !!t && (t.status === 'completed' || t.status === 'completed_with_warnings')
-/** 任务进行态（下载中：环脉冲） */
-const isBusyT = (t) => !!t && (t.status === 'pending' || t.status === 'active')
-/** 行状态代表任务优先级：done > busy > failed/canceled（同档取 updatedAt 新） */
-const STATUS_RANK = { completed: 3, completed_with_warnings: 3, active: 2, pending: 2, failed: 1, canceled: 0 }
-
-/** 28px 进度环 r=9 周长（2πr≈56.55；与 library 40px 环同范式小号版） */
-const HP_RING_LEN = 56.55
+// isDoneT / isBusyT / STATUS_RANK / SMALL_RING_LEN 已收敛至 download-state.js（P0-A1）
 
 const songKey = (s) => `${s.platform}:${s.songmid}`
 
-/** owned map 代表任务合并：新视图优先于旧值（同曲多任务时保留最高优先级） */
+/** owned map 代表任务合并（委托公共模块 mergeOwned） */
 function ownedUpsert(map, view) {
-  if (!view || !view.id) return
-  const key = `${view.platform}:${view.songmid}`
-  const prev = map.get(key)
-  if (!prev) {
-    map.set(key, view)
-    return
-  }
-  const pr = STATUS_RANK[prev.status] ?? 0
-  const nr = STATUS_RANK[view.status] ?? 0
-  if (nr > pr || (nr === pr && (view.updatedAt || 0) >= (prev.updatedAt || 0))) map.set(key, view)
+  mergeOwned(map, view)
 }
 
-/** 拉全量任务快照重建 state.owned（进详情/重连对账/播放全部前兑底） */
+/** 拉全量终态任务快照重建 state.owned（#196-fix2: 改用 /tasks/owned 轻量端点，无分页截断） */
 async function reconcileOwned() {
   try {
-    const r = await api.tasks.list()
+    const r = await api.tasks.owned()
     const map = new Map()
-    for (const t of r.tasks || []) ownedUpsert(map, t)
+    for (const o of r.owned || []) {
+      const [platform, songmid] = o.key.split(':')
+      mergeOwned(map, {
+        id: o.taskId,
+        platform,
+        songmid,
+        status: o.status,
+        requestedQuality: o.quality,
+        filePath: o.hasFile ? 'yes' : null,
+      })
+    }
     state.owned = map
   } catch {
     /* 拿不到任务列表：保持现状（行为回退为全下载态，SSE 增量仍可补齐） */
@@ -690,31 +691,9 @@ function filteredSongs(pl) {
   )
 }
 
-/** #69 行状态位控件：未下载=下载钮 / 下载中=28px 进度环（脉冲）/ 已下载=绿勾 hover 播放三角 */
+/** #69 行状态位控件（委托公共模块 stateButtonHtml，P0-A1 收敛） */
 function rowStateCtl(s, t) {
-  if (isDoneT(t)) {
-    return `
-        <button class="row-dl done" data-play="${escapeHtml(String(t.id))}" type="button" aria-label="播放已下载的 ${escapeHtml(s.title)}" title="已下载到本地 · 点击播放">
-          <svg class="ic-ok" viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 6.5l2.6 2.6L10 3.5"/></svg>
-          <svg class="ic-go" viewBox="0 0 12 12" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M3 1.5v9l7.5-4.5z"/></svg>
-        </button>`
-  }
-  if (isBusyT(t)) {
-    const pct = t.progress || 0
-    return `
-        <button class="row-dl hp-dl-ing" data-task="${escapeHtml(String(t.id))}" type="button" disabled title="下载中 ${pct}%">
-          <svg class="hp-ring" viewBox="0 0 28 28" width="16" height="16" aria-hidden="true">
-            <circle class="hp-ring-track" cx="14" cy="14" r="9" />
-            <circle class="hp-ring-fill" cx="14" cy="14" r="9" style="stroke-dasharray:${HP_RING_LEN};stroke-dashoffset:${(HP_RING_LEN * (1 - pct / 100)).toFixed(2)}" />
-          </svg>
-        </button>`
-  }
-  // 未下载（含 failed/canceled 代表任务：回到可下载态，可再次提交新任务）
-  const failed = t && (t.status === 'failed' || t.status === 'canceled')
-  return `
-        <button class="row-dl" data-dl="${escapeHtml(String(s.songmid))}" type="button" aria-label="下载 ${escapeHtml(s.title)}" title="${failed ? '上次下载未完成，点击重试' : '下载这首'}">
-          <svg viewBox="0 0 12 12" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5v7M3 6l3 3 3-3M2 10.5h8"/></svg>
-        </button>`
+  return stateButtonHtml({ task: t, name: s.title, dlAttr: 'data-dl', dlValue: String(s.songmid) })
 }
 
 /** SSE 事件局部更新：只替换 .hp-row-state 内容 + 行 title（不重建行、不动入场动画） */
@@ -852,10 +831,7 @@ function onTaskProgress(p) {
     }
   }
   const btn = document.querySelector(`#hp-songs .hp-row-state [data-task="${CSS.escape(p.id)}"]`)
-  if (!btn) return
-  const fill = btn.querySelector('.hp-ring-fill')
-  if (fill) fill.style.strokeDashoffset = (HP_RING_LEN * (1 - (p.percent || 0) / 100)).toFixed(2)
-  btn.title = `下载中 ${p.percent || 0}%`
+  updateRingProgress(btn, p.percent || 0)
 }
 
 /** SSE 重连成功（服务端约定：首包 connected → 全量对账）：详情态重拉任务快照 */
@@ -906,7 +882,7 @@ async function onRowDownload(e) {
   if (!song) return
   btn.disabled = true
   try {
-    const r = await api.download.batch({ items: [{ platform: song.platform, musicInfo: song.songInfo }], quality: DL_QUALITY })
+    const r = await api.download.batch({ items: [{ platform: song.platform, musicInfo: song.songInfo }], quality: getDownloadQuality() })
     if (r.acceptedCount) {
       const tid = r.accepted?.[0]?.id
       if (tid) {
@@ -1002,11 +978,7 @@ async function downloadAll() {
   btn.disabled = true
   try {
     await reconcileOwned() // #69：拉最新快照建 owned（SSE 增量之外的兑底）
-    const owned = new Set(
-      [...state.owned].filter(([, t]) => isDoneT(t)).map(([k]) => k),
-    )
-    const pending = pl.songs.filter((s) => !owned.has(songKey(s)))
-    const skipped = pl.songs.length - pending.length
+    const { pending, skipped } = dedupeItems(pl.songs, state.owned)
     if (!pending.length) {
       toast(`全部 ${pl.songs.length} 首已在本地收藏，无需重复下载`)
       return
@@ -1021,7 +993,7 @@ async function downloadAll() {
       batches.map(async (batch) => {
         const r = await api.download.batch({
           items: batch.map((s) => ({ platform: s.platform, musicInfo: s.songInfo })),
-          quality: DL_QUALITY,
+          quality: getDownloadQuality(),
         })
         accepted += r.acceptedCount
         rejected += r.rejectedCount
@@ -1125,9 +1097,7 @@ export function init() {
   $('#hp-dl-all')?.addEventListener('click', downloadAll)
   // #69 SSE 联动：详情行三态实时刷新（订阅一次性注册 + drillId 守卫，全局单连接
   // 复用 library.js 范式；非详情态事件被守卫拦截，无泄漏无重复订阅）
-  for (const ev of ['task:created', 'task:pending', 'task:active', 'task:completed', 'task:completed_with_warnings', 'task:failed', 'task:canceled']) {
-    sse.on(ev, onTaskEvent)
-  }
+  subscribeTaskEvents(sse, onTaskEvent)
   sse.on('task:progress', onTaskProgress)
   sse.on('connected', onSseConnected) // 断线重连 → 详情态全量对账刷新
   // #69 播放联动：当前曲目变化 → 详情行 now-playing 高亮（player 模块全局派发）
