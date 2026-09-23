@@ -1,6 +1,6 @@
 {
   "name": "rainbow-server",
-  "version": "0.2.22",
+  "version": "0.2.23",
   "description": "Rainbow — headless music download service (based on lx-music source ecosystem)",
   "private": true,
   "type": "module",
@@ -29,7 +29,7 @@
     "p-queue": "^8.0.1",
     "pino": "^9.5.0",
     "pinyin-pro": "^3.29.4",
-    "sharp": "^0.33.5",
+    "sharp": "^0.35.4",
     "yaml": "^2.6.0"
   },
   "devDependencies": {

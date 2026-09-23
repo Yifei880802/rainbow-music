@@ -774,7 +774,7 @@ $ FNPACK_BIN=<repo>/tools/fnpack ./scripts/verify-ci.sh --skip-docker
 
 > **分块自检**：各块增行之和 `22 + 90 + 70 + 65 + 8 + 12 = 267`、删行之和 `3 + 10 + 9 + 1360 + 2 + 12 = 1396`，与 tracked 实测 **+267 / −1396** 逐位相符（拆分无遗漏、无重复计数；本版由 `fill-appendix-t223.py` 直接从 `git diff --numstat` 推导各块，并对「拆分之和 == tracked 合计」做 assert，不自洽即 ABORT 不写盘）。
 >
-> **净减 1129 行全部集中在 `server/package-lock.json`**（+65 / −1357），即 batch0 移除 drizzle-orm + drizzle-kit 死依赖与 batch2 的 node-cron v4 零依赖化共同带走的 **77 个包**（含 `uuid` 传递依赖链与 `@esbuild-kit/*`）。除 lockfile 外的 15 个 tracked 文件合计 **+202 / −39**，是**净增**的，拆开为：`server/src` 五文件 +33 / −8、门禁护栏两文件 +70 / −9、文档与配置样例五文件 +91 / −11、`server/package.json` +3 / −6、版本承载脚本与清单两文件（`fpk/manifest`、`scripts/verify-image.sh`）+5 / −5。
+> **净减 1292 行全部集中在 `server/package-lock.json`**（+65 / −1357），即 batch0 移除 drizzle-orm + drizzle-kit 死依赖与 batch2 的 node-cron v4 零依赖化共同带走的 **77 个包**（含 `uuid` 传递依赖链与 `@esbuild-kit/*`）。除 lockfile 外的 15 个 tracked 文件合计 **+202 / −39**，是**净增**的，拆开为：`server/src` 五文件 +33 / −8、门禁护栏两文件 +70 / −9、文档与配置样例五文件 +91 / −11、`server/package.json` +3 / −6、版本承载脚本与清单两文件（`fpk/manifest`、`scripts/verify-image.sh`）+5 / −5。
 >
 > **本文行数的自指说明**：上表 `docs/CHANGELOG-0.2.22.md` 一行的 **781** 就是本文件写入完成后的实际总行数，算式是「附录块之前的正文行数 + 附录块行数 K」，故 T = 735 + 46 = 781。因为回填只改行内数字、不改行数，T 即为**不动点**，一次收敛。该数字与附录合计值均由 `t219-scratch/fill-appendix.py`（首填）、`t219-scratch/fix-appendix-selfref.py`（§10.3 扩写后重算）与 `t223-scratch/fill-appendix-t223.py`（本次 amend 后重算）从 `git diff --numstat` 实测计算后回填，**不是手填**，避免自指失准。**注意公式在 #223 变过**：首版填写时两个 A 文件还是 `??` 未跟踪，`numstat` 只返回 16 项，故 A = tracked + 测试行数 + T 需要把两者**额外加上**；本次 amend 时它们已入树、`numstat` 返回 18 项并已含其行数，沿用旧式会**双重计数**——新脚本改为先按 `name-status` 剔除 2 个 A 项得到 16 个 M 的合计（+267 / −1396），再加回 `+278` 与 `+781`。
 

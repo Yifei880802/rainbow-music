@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.22
+version=0.2.23
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 # App Center「已安装」卡片的分类副标题数据源是 appcenter 库 app.tags 列（fnOS 规范
@@ -22,4 +22,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=本次为质量修复与依赖维护更新，升级无需重新配置，已有数据与已下载文件不受影响。核心修复：音源健康排序（L1）此前把冒烟测试的诊断性 HEAD 探测一并计入健康度，而 mg/tx 等平台的内容分发网络常拒绝 HEAD 请求但正常响应 GET，导致实际取链与下载全部成功的音源被误判为「近期全失败」并降到候选末尾，下载因此绕远路走次优音源。本版把 L1 的聚合口径收敛为只统计 search 与 musicUrl 两个真正代表解析与下载能力的关键步骤，head/lyric/pic 不再计入，健康排序恢复与真实可用性一致；健康页矩阵颜色与告警口径保持原样（仍含 head，宁可多报不漏报）。安全与依赖侧：升级 @fastify/static（8.3.0 到 10.1.4，含路径穿越与鉴权绕过的公开安全修复；其唯一破坏性变更涉及的 setHeaders 回调本项目未使用）与 node-cron（3.0.3 到 4.6.0，新版零运行时依赖，定时冒烟调度行为不变）；同时移除从未被任何源码或测试引用的 drizzle-orm 与 drizzle-kit 死依赖，并随之移除 v4 已自带类型因而冗余的 @types/node-cron，依赖树减少 76 个包。质量侧：新增 L1 健康聚合与 L2 熔断回退回归测试 9 例（含误降权场景复现与对照组），本地门禁与 CI 的沙箱隔离护栏改为同构的三级 esbuild 候选解析，避免依赖树变化后护栏静默降级为跳过。文档侧：订正 API 契约中设置端点的响应结构与校验规则（补齐此前缺失的 sources 与 search 两个块），订正音源文档的冒烟步骤描述（三步订正为五步），并在开发文档新增「音源质量闸门 L1/L2/L3」权威章节，准确说明熔断器为进程内存态、阈值 5、无持久化、无独立半开计时，以及不存在按 429/403 自动降并发的机制。
+changelog=本次为依赖维护更新，升级无需重新配置，已有数据与已下载文件不受影响。核心变更：图像处理库 sharp 从 0.33.5 升级到 0.35.4，内置的 libvips 图像引擎同步升级到 8.18.6；sharp 在本服务中唯一的用途是下载完成后把封面原图统一缩放为正方形 JPEG 再嵌入音频文件标签，新版的破坏性变更均未触及 resize+jpeg 这一用法，封面缩放行为不变、无需改动任何源码。分发方式变化：新版 sharp 改用按平台预编译的 @img/sharp-* 二进制包（如 linux/amd64 用 @img/sharp-linux-x64、linux/arm64 用 @img/sharp-linux-arm64，配套 @img/sharp-libvips-* 1.3.3）取代旧版安装时本地编译（install script + node-gyp）的方式，安装更快更稳、不再依赖目标机的编译工具链。验证情况：linux/amd64 与 linux/arm64 两个架构均已通过 docker buildx 双架构构建预演，npm install 无 UNMET/peer/GLIBC/node-gyp 报错，运行时 require('sharp') 与 resize+jpeg 冒烟在两架构均通过；基础镜像 node:22-bookworm（glibc 2.36）满足新版要求，Dockerfile 无需改动。文档侧：订正上一版变更日志 CHANGELOG-0.2.22.md 中的一处手写笔误——package-lock.json 的净减行数由 1129 订正为实测真值 1292（+65/−1357）。
