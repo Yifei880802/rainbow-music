@@ -89,6 +89,14 @@ jobs:
   # ─────────────────────────────────────────────
   # ②b 单元测试（Node 20，与 build 并行；任一用例失败即门禁不通过，
   #     docker 作业同时依赖两者，测试不过不会推镜像/出包）
+  #
+  #     v0.2.21：在 npm test **之前**插入「沙箱隔离护栏 SANDBOX_ELISION」step，
+  #     把 scripts/verify-ci.sh 里 isolation 段的编译期护栏搬进 CI（此前只在本地
+  #     门禁，见 docs/CHANGELOG-0.2.20.md §八.1）。目的：一旦有人把
+  #     `import './fixtures/env-sandbox.js'` 改回「未使用的具名 import」，esbuild/tsx
+  #     会把整条 import elide → 沙箱不生效 → 测试读写真机 data/ro.db（v0.2.19 CI
+  #     失败根因），CI 侧**秒级红**并直接点名文件与修法，不必等 npm test 跑出
+  #     离根因六步远的间接症状。
   # ─────────────────────────────────────────────
   test:
     name: 单元测试
@@ -101,11 +109,69 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: server/package-lock.json
-      - name: 运行测试套件
+      - name: 安装依赖
+        working-directory: server
+        run: npm ci
+      - name: 沙箱隔离护栏 SANDBOX_ELISION
         working-directory: server
         run: |
-          npm ci
-          npm test
+          set -euo pipefail
+          # 解析 esbuild：优先 tsx 自带的那份（与 `npm test` = `tsx --test` 实际使用的
+          # 转译器同源，判定最忠实），其次 node_modules/.bin/esbuild（drizzle-kit 的传递
+          # 依赖），最后 npx --no-install（只用已装好的，绝不联网拉包）。
+          # 三者都不存在 = npm ci 没装 devDependencies，属环境异常 → 直接红（不静默跳过）。
+          ESBUILD=""
+          for c in \
+            "node_modules/tsx/node_modules/esbuild/bin/esbuild" \
+            "node_modules/.bin/esbuild"; do
+            if [ -x "$c" ]; then ESBUILD="./$c"; break; fi
+          done
+          if [ -z "$ESBUILD" ] && npx --no-install esbuild --version >/dev/null 2>&1; then
+            ESBUILD="npx --no-install esbuild"
+          fi
+          if [ -z "$ESBUILD" ]; then
+            echo "::error::SANDBOX_ELISION 无法执行：未找到 esbuild 可执行文件（npm ci 应已随 tsx / drizzle-kit 装入）"
+            exit 1
+          fi
+          echo "SANDBOX_ELISION 使用转译器：$ESBUILD ($($ESBUILD --version))"
+          # 源文件判定模式与转译产物判定模式**同形**：以 import 开头且路径含
+          # fixtures/env-sandbox ——「源里怎么写的，转译后就该还在」，语义自洽，
+          # 不依赖 esbuild 的注释处理行为。
+          PAT='^[[:space:]]*import[[:space:]].*fixtures/env-sandbox'
+          checked=0
+          elided=0
+          unverifiable=0
+          for f in test/*.test.ts; do
+            [ -f "$f" ] || continue
+            # 并非所有 test 文件都用沙箱：只查「源里真的 import 了 env-sandbox」的，避免误红
+            grep -Eq "$PAT" "$f" || continue
+            checked=$((checked + 1))
+            out=""
+            if out="$($ESBUILD --format=esm "$f" 2>/dev/null)"; then
+              if printf '%s\n' "$out" | grep -Eq "$PAT"; then
+                echo "  ok       $f"
+              else
+                elided=$((elided + 1))
+                echo "::error file=$f::SANDBOX_ELISION_FAIL $f 源文件 import 了 fixtures/env-sandbox，但转译产物中该 import 已被整行 elide → env-sandbox 不执行 → 测试会读写真机 data/ro.db。修法：改为裸副作用 import './fixtures/env-sandbox.js'"
+              fi
+            else
+              # esbuild 自身转译失败 → 给不出结论，记为不可验证（语法问题由下一步 npm test 暴露）
+              unverifiable=$((unverifiable + 1))
+              echo "::warning file=$f::esbuild 转译失败，无法判定 elision（语法问题由 npm test 暴露）"
+            fi
+          done
+          echo "SANDBOX_ELISION 汇总：checked=$checked elided=$elided unverifiable=$unverifiable"
+          if [ "$checked" -eq 0 ]; then
+            echo "::warning::server/test/*.test.ts 中没有任何文件 import fixtures/env-sandbox，护栏本轮为空转"
+          fi
+          if [ "$elided" -gt 0 ]; then
+            echo "::error::SANDBOX_ELISION_FAIL $elided/$checked 个沙箱测试文件的 env-sandbox import 被 elide"
+            exit 1
+          fi
+          echo "SANDBOX_ELISION_PASS"
+      - name: 运行测试套件
+        working-directory: server
+        run: npm test
 
   # ─────────────────────────────────────────────
   # ③ Docker buildx 多架构镜像 → GHCR
