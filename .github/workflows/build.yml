@@ -117,8 +117,9 @@ jobs:
         run: |
           set -euo pipefail
           # 解析 esbuild：优先 tsx 自带的那份（与 `npm test` = `tsx --test` 实际使用的
-          # 转译器同源，判定最忠实），其次 node_modules/.bin/esbuild（drizzle-kit 的传递
-          # 依赖），最后 npx --no-install（只用已装好的，绝不联网拉包）。
+          # 转译器同源，判定最忠实），其次 node_modules/.bin/esbuild（v0.2.21 及之前由
+          # drizzle-kit 传递带入 0.19.12；v0.2.22 移除 drizzle 死依赖后此候选恒落空，保留
+          # 只为兼容显式装了 esbuild 的现场），最后 npx --no-install（只用已装好的，绝不联网拉包）。
           # 三者都不存在 = npm ci 没装 devDependencies，属环境异常 → 直接红（不静默跳过）。
           ESBUILD=""
           for c in \
@@ -130,7 +131,7 @@ jobs:
             ESBUILD="npx --no-install esbuild"
           fi
           if [ -z "$ESBUILD" ]; then
-            echo "::error::SANDBOX_ELISION 无法执行：未找到 esbuild 可执行文件（npm ci 应已随 tsx / drizzle-kit 装入）"
+            echo "::error::SANDBOX_ELISION 无法执行：未找到 esbuild 可执行文件（npm ci 应已随 tsx 装入其嵌套副本）"
             exit 1
           fi
           echo "SANDBOX_ELISION 使用转译器：$ESBUILD ($($ESBUILD --version))"
@@ -246,7 +247,7 @@ jobs:
           if curl -fSL --retry 3 --retry-delay 2 --connect-timeout 15 -o "$BIN" "$URL" \
              && [ -s "$BIN" ] && chmod +x "$BIN"; then
             echo "FNPACK_BIN=$BIN" >> "$GITHUB_ENV"
-            echo "[fnpack] 下载成功，build-fpk.sh 将走官方 fnpack 打包路径（FNPACK_BIN=$BIN）"
+            echo "[fnpack] 下载成功，build-fpk.sh 将走官方 fnpack 打包路径（FNPACK_BIN=${BIN}）"
           else
             echo "::warning::官方 fnpack 下载/校验失败（${URL}），不中断流水线：build-fpk.sh 将降级为手工 tar 组装（降级产物仅供本地验证，真机分发请使用 fnpack 构建）"
           fi

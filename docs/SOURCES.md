@@ -9,7 +9,7 @@
 每轮评测对每个候选音源执行三层验证（复用服务内置能力，不引入额外依赖）：
 
 1. **导入与初始化**：`POST /api/v1/sources/import/content`（或 `import/url`）→ 校验 `status=ready`、声明的平台/音质矩阵；初始化失败（如后端域名不可达）直接淘汰；
-2. **冒烟矩阵**：`POST /api/v1/health/smoke/run` → 每音源 × 每平台真实链路 `search → musicUrl(128k) → HEAD 探测（2xx + content-length）`，结果落 `smoke_results`，`GET /api/v1/health/smoke` 输出矩阵（绿/黄/红）；
+2. **冒烟矩阵**：`POST /api/v1/health/smoke/run` → 每音源 × 每平台真实链路五步 `search → musicUrl(128k) → HEAD 探测（2xx + content-length）→ lyric → pic`（步骤枚举见 `server/src/core/db/smoke.ts` 的 `SmokeStep`），结果落 `smoke_results`，`GET /api/v1/health/smoke` 输出矩阵（绿/黄/红）；
 3. **端到端下载**：对判定可用的音源×平台提交锁定单源的真实下载任务（`POST /api/v1/download`，`sourceIds` 锁定、128k 快速档）→ `completed` 即证明上游 URL HTTP 200 + 音频 content-type + 完整文件落盘；本地播放链路另以 `GET /api/v1/play/:taskId` 验证（200 全量 / 206 Range，`audio/mpeg`）。
 
 ## 实测矩阵（2026-08-20）
@@ -64,4 +64,5 @@
 - ~~`enabled` 为内存态~~（#56 已修复）：启停状态现持久化到 SQLite meta 表（key `sourceEnabled`），`loadAll()` 热重载与服务重启后自动恢复；验证方式：toggle → 触发目录变动/重启 → 状态保持。删除音源时同步清理记录。
 - **一键快速冒烟**（#56）：音源管理页「一键冒烟测试」按钮 → `POST /api/v1/sources/smoke` 同步返回矩阵（音源串行、平台并行≤3、整体 60s 预算，契约见 API.md）；与全量冒烟（health/smoke/run，落库+告警）互斥。矩阵每格「搜索/取链」双态，全部可测平台均未通过的音源会标「建议禁用」（与 dead 态判定同源）。
 - 音源上游可用性随时间漂移（本轮 qdy kw/tx/mg 的 HEAD 410/502/404 与历史记录已有差异），建议保持 `smokeTest` 定时任务（默认每日 06:00）并关注告警。
+- **HEAD 探测失败 ≠ 真实下载能力**：mg/tx 等平台 CDN 常拒 HEAD（405/410/502）而 GET 完全正常（本页矩阵中 qdy 的 mg/tx HEAD 失败即属此类，其 musicUrl 与端到端下载全过）。因此自 v0.2.22 起，L1 健康排序的聚合口径**只算 `search` / `musicUrl` 两个关键步骤**，`head` / `lyric` / `pic` 不计入，避免诊断性探测把健康源误降到候选末尾；矩阵颜色与告警口径仍含 head（宁可多报），详见 `docs/DEVELOPMENT.md` 「音源质量闸门 L1/L2/L3」。
 - 第三方脚本为用户自托管数据：更新方式为音源管理页「URL 导入/重载」，或替换 `data/sources/*.js` 后自动热重载。

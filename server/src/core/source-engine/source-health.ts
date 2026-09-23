@@ -6,6 +6,13 @@
  *   （排到候选末尾），优先尝试健康音源，减少每任务在坏源上白跑 30s。
  *   开关 config.sources.healthAware（默认 true）。
  *
+ *   **聚合口径（v0.2.22 修正）**：只取 `search` / `musicUrl` 两个关键步骤。冒烟五步里
+ *   另外三步都**不代表真实解析与下载能力**，计入会把健康源误判为坏源：
+ *     - `head` 是诊断性探测——mg/tx 等平台 CDN 常拒 HEAD（405/410/502）而 GET 正常；
+ *     - `lyric` / `pic` 是附属元数据，缺失不影响取链与下载。
+ *   修正前的实测后果：musicUrl 95/95 零失败、实际下载 127/127 全成功的 qdy，仅因 head
+ *   在 mg/tx 被拒就被判 allRecentFailed，被降到候选末尾（健康排序把最健康的源排到最后）。
+ *
  * L2 —— 熔断器（在线信号）：运行期同一 sourceId 在滑动窗口内连续失败累计 ≥K 次即
  *   「打开」，后续任务临时把该源从候选剔除（窗口内失败自然老化后自动「半开」恢复）。
  *   阈值 config.sources.circuitThreshold（默认 5）、窗口 config.sources.circuitWindowMs
@@ -30,15 +37,25 @@ export interface SourceHealth {
 
 /** 健康聚合的 run 采样深度（近 N 次冒烟） */
 const HEALTH_SAMPLE_RUNS = 5
+/**
+ * 参与健康聚合的冒烟步骤白名单（v0.2.22）：只有这两步能代表「源是否真能解析出可下载
+ * 的直链」。诊断性 head 与附属 lyric/pic 一律排除，见文件头「聚合口径」。
+ * 取值必须与 db/smoke.ts 的 SmokeStep 联合类型一致。
+ */
+const HEALTH_STEPS = ['search', 'musicUrl'] as const
 /** 健康聚合结果内存缓存 TTL：冒烟是低频事件（默认每日 6 点），30s 缓存足够新鲜且省查询 */
 const HEALTH_CACHE_TTL_MS = 30_000
 
 let healthCache: { at: number; map: Map<string, SourceHealth> } | null = null
 
 /**
- * 聚合 smoke_results 得到每个音源的健康快照（source 级，跨平台合并：任一平台失败即该 run 失败）。
+ * 聚合 smoke_results 得到每个音源的健康快照（source 级，跨平台合并：任一平台的关键步骤
+ * 失败即该 run 失败）。
  * 表不存在（冒烟从未运行）或查询异常时返回空 Map（消费侧视为全中性，不降权、不熔断），
  * 保证首启/无冒烟历史时行为与 L 特性引入前完全一致。
+ *
+ * 只统计 HEALTH_STEPS 白名单内的步骤：某源若只有 head/lyric/pic 行（关键步骤从未跑过），
+ * 则不产生快照 → 消费侧视为中性、不降权（缺数据绝不等于坏源）。
  */
 export function computeSourceHealth(sampleRuns = HEALTH_SAMPLE_RUNS): Map<string, SourceHealth> {
   const now = Date.now()
@@ -46,14 +63,16 @@ export function computeSourceHealth(sampleRuns = HEALTH_SAMPLE_RUNS): Map<string
   const map = new Map<string, SourceHealth>()
   try {
     const db = initDb()
-    // 按 (source_id, run_id) 聚合：MIN(ok)=0 表示该 run 内任一步骤失败即整 run 失败
+    // 按 (source_id, run_id) 聚合：MIN(ok)=0 表示该 run 内任一**关键步骤**失败即整 run 失败。
+    // step 白名单以参数绑定传入（不用字符串拼接，取值恒来自本模块常量，无注入面）。
     const rows = db
       .prepare(
         `SELECT source_id, run_id, MIN(ok) AS all_ok, MAX(created_at) AS ts
          FROM smoke_results
+         WHERE step IN (${HEALTH_STEPS.map(() => '?').join(', ')})
          GROUP BY source_id, run_id`,
       )
-      .all() as { source_id: string; run_id: string; all_ok: number; ts: number }[]
+      .all(...HEALTH_STEPS) as { source_id: string; run_id: string; all_ok: number; ts: number }[]
     const bySource = new Map<string, { all_ok: number; ts: number }[]>()
     for (const r of rows) {
       const arr = bySource.get(r.source_id) ?? []

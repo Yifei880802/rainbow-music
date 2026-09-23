@@ -945,35 +945,65 @@ curl -b cookie.txt -X POST http://127.0.0.1:23330/api/v1/sources/upload \
 
 ### GET /api/v1/settings
 
-返回脱敏配置视图。
+返回脱敏配置视图（对应 `server/src/routes/settings.ts` 的 `safeView()`，六个顶层块恒全部出现）。
 
 ```json
 {
   "auth": { "apiKeySet": true },
-  "download": { "concurrency": 3, "defaultQuality": "flac", "nameTemplate": "{name} - {singer}", "embedCover": true, "embedLyric": true, "coverSize": 500 },
+  "download": {
+    "concurrency": 3, "defaultQuality": "flac", "nameTemplate": "{name} - {singer}",
+    "embedCover": true, "embedLyric": true, "coverSize": 500,
+    "resolvedDir": "/vol1/1000/downloads", "startupResolvedDir": "/vol1/1000/downloads",
+    "dirTemplate": "", "dedupePolicy": "skip", "batchMaxItems": 200, "resume": true,
+    "diskPrecheck": true, "minFreeBytes": 104857600
+  },
+  "sources": { "healthAware": true, "circuitThreshold": 5, "circuitWindowMs": 300000, "ratePerMin": 0 },
   "scrape": { "enabled": true, "autoOnComplete": true },
+  "search": {
+    "platformWeights": { "kw": 1, "kg": 1, "tx": 1.1, "wy": 1, "mg": 0.9 },
+    "suggestPlatforms": ["wy", "tx", "kg"],
+    "correctEnabled": true, "correctMinResults": 3, "relatedEnabled": true
+  },
   "smokeTest": { "enabled": true, "cron": "0 6 * * *", "keyword": "周杰伦", "checkLyric": true, "checkPic": true, "alertThreshold": 2,
     "alert": { "bark": { "enabled": false, "serverUrl": "https://api.day.app", "deviceKeySet": false }, "serverChan": { "enabled": false, "sendKeySet": false } } }
 }
 ```
 
+> **字段说明**：`download.resolvedDir` = 当前解析后的绝对下载目录，`download.startupResolvedDir` = 本进程启动时快照，两者不一致 → 前端显示「待重启」角标。`sources.*` 即 L1/L2/L3 三层音源质量闸门的可调参（`healthAware`=L1 健康排序开关、`circuitThreshold`/`circuitWindowMs`=L2 熔断阈值与滑动窗口、`ratePerMin`=L3 每音源令牌桶限速且 **0=禁用**）；机制详见 `docs/DEVELOPMENT.md` 「音源质量闸门 L1/L2/L3」。`search.platformWeights`/`suggestPlatforms` 为相关度评分权重与联想取榜平台，`correctEnabled`/`correctMinResults`/`relatedEnabled` 为错字容错与相关推荐开关。
+
 > **契约注（#126 评审 m2；#127 起口径更新）**：`smokeTest` 块及其下各字段（含 `alert.bark` / `alert.serverChan` 子树）**恒出现**，不随 `config.yaml` 是否写了 `smokeTest:` 而缺省。自 #127 起 `loadConfig()` 会把 YAML 与内置默认值（`server/src/core/config.ts` 的 `buildDefaultConfig()`，口径同 `config.example.yaml`）**深合并**，故 `config.yaml` 里**缺字段或写成空值**（`enabled:` → YAML `null`）时一律回落内置默认值：`enabled` / `checkLyric` / `checkPic` → `true`，`alert.bark.enabled` / `alert.serverChan.enabled` → `false`，`cron` → `0 6 * * *`，`keyword` → `周杰伦`，`alertThreshold` → `2`，`bark.serverUrl` → `https://api.day.app`。**要关掉某项必须显式写 `false`，留空等于用默认值。**（#127 之前是「缺省/空值一律回落 `false`」，此为有意的行为变更；真机 `.fpk` 的 `config.yaml` 由安装回调渲染、恒含完整块，故对真机部署零影响。）展示层用 `=== true` 判定，调度器 `scheduler.ts` 用 `if (!config.smokeTest.enabled) return` 判定，深合并后两者拿到的是**同一个非 null 布尔值**，恒同真假——不会重现「UI 显示启用、调度器实际禁用」的背离。**密钥字段只回传 `*Set` 布尔**（`deviceKeySet` / `sendKeySet` / `apiKeySet`）；`auth.webLogin.password` 的合并默认值恒为**空串**而非随机强密码，故未配密码时 `isPasswordConfigured()` 仍为 `false`、登录接口仍返回 400「尚未设置登录密码…」的明确提示（随机强密码只在配置文件本身不存在、由首启自动生成时产生，并仅在日志打印一次）。即：该端点恒返回 200 且结构完整，前端可直接按上表结构取值，无需再做存在性判断。
 
 ### PATCH /api/v1/settings
 
-局部更新配置（下载 / 刮削 / 冒烟测试 / 告警）。只传要改的字段。
+局部更新配置（下载 / 音源闸门 / 刮削 / 搜索 / 冒烟测试 / 告警）。只传要改的字段。
 
-**校验规则**：
+**校验规则**（越界一律 `400` + `{ "error": "…" }`）：
 - `download.concurrency`：1–10 整数
-- `download.defaultQuality`：须为四种音质之一
+- `download.defaultQuality`：须为四种音质之一（`flac24bit` / `flac` / `320k` / `128k`）
 - `download.coverSize`：100–1000 整数
+- `download.dir` / 顶层 `downloadDir`：字符串、trim 后非空、≤512 字符、不含控制字符（相对路径相对项目根解析，绝对路径原样使用）
+- `download.dedupePolicy`：`skip` / `replace` / `always-new` 三选一
+- `download.batchMaxItems`：1–1000 整数
+- `download.minFreeBytes`：0 – 1TB（1099511627776）的整数（0=不限制）
+- `download.resume` / `download.diskPrecheck`：布尔值
+- `download.dirTemplate`：字符串、≤512 字符、不含控制字符（`''`=平铺合法）
+- `sources.healthAware`：布尔值
+- `sources.circuitThreshold`：1–100 整数
+- `sources.circuitWindowMs`：1000–3600000 整数（1s–1h）
+- `sources.ratePerMin`：0–100000 整数（**0 = 不限速**）
+- `search.platformWeights`：对象，键∈五平台，值为 0–5 的数值
+- `search.suggestPlatforms`：数组，元素∈五平台
+- `search.correctMinResults`：1–50 整数
+- `search.correctEnabled` / `search.relatedEnabled`：布尔值
+
+> **未做服务端校验的字段**：`smokeTest.*`（含 `cron` / `alertThreshold` / `keyword` / `enabled` / `checkLyric` / `checkPic` / `alert.*`）与 `scrape.*` 在本端点**不做强校验**，直接深合并落盘。非法 `cron` 表达式不返回 400，而是在重排调度时被 `scheduler.ts` 的 `cron.validate()` 拦下——该次不启动调度器、只记 `warn` 日志（旧任务已在 `startSmokeScheduler()` 入口被 `stopSmokeScheduler()` 停掉，故结果是「定时冒烟静默不跑」）。告警阈值请用 `GET /api/v1/health/smoke` 反推，不要依赖 PATCH 报错。
 
 ```bash
 curl -b cookie.txt -X PATCH http://127.0.0.1:23330/api/v1/settings \
   -H 'Content-Type: application/json' \
   -d '{ "download": { "concurrency": 5, "defaultQuality": "320k" } }'
 ```
-并发变化即时生效；`smokeTest.cron`/`enabled` 变化会重排定时任务。响应返回更新后的脱敏视图。
+并发变化即时生效（`downloadQueue.setConcurrency()`）；`smokeTest.cron`/`enabled` 变化会重排定时任务（`rescheduleSmoke()`）；`sources.*` 变化**无需重排也无需重启**：L1 开关与 L2 阈值在每次取链/每次记录失败时实时读 `config`（L1 健康快照另有 30s 内存缓存 TTL），L3 在每次取令牌时实时读 `ratePerMin`（已有桶的存量令牌不清零）。L2 熔断计数是**进程内存态**、不持久化，重启即清零。响应返回更新后的脱敏视图。
 
 ### POST /api/v1/settings/apikey/generate
 
@@ -1042,7 +1072,7 @@ es.addEventListener('task:completed', e => console.log('完成', JSON.parse(e.da
 **响应 200**：
 ```json
 {
-  "app": "ro", "version": "0.2.21", "uptimeSec": 3600,
+  "app": "ro", "version": "0.2.22", "uptimeSec": 3600,
   "node": "v22.x.x", "memoryMB": 198,
   "sources": { "loaded": 1, "ready": 1 },
   "tasks": { "pending": 0, "active": 1, "completed": 12, "failed": 0 },
@@ -1465,6 +1495,17 @@ Query：`limit`（clamp 1..500，默认 100）、`offset`（默认 0）、`q`（
 ## 11. 健康冒烟 Health Smoke
 
 音源可用性冒烟测试（R9）：对每个「就绪且启用」的音源逐平台执行 `search → musicUrl → head → lyric → pic` 五步探测，结果落库（`smoke_results`）并可查趋势。与 `POST /api/v1/sources/smoke`（#56 一键快速冒烟：同步返回、**不落库不告警**）互斥、互补。
+
+> **`smoke_results` 的四个消费口径各不相同，读数据前先确认看的是哪个**（v0.2.22 核对）：
+>
+> | 口径 | 实现 | 统计的 step | 用途 |
+> |---|---|---|---|
+> | **L1 健康排序** | `source-engine/source-health.ts` `computeSourceHealth()` | **仅 `search` + `musicUrl`** | 候选音源排序（近 5 轮全败的源降到末尾） |
+> | 矩阵三色 | `routes/health.ts` | `search`/`musicUrl`/`head` 任一失败=red；仅 `lyric`/`pic` 失败=yellow | 健康页展示 |
+> | 「连续失败」告警 | `db/smoke.ts` `recentRunsOutcome()` | **五步全算**（无 step 过滤的 `MIN(ok)`） | Bark/Server酱 告警，宽口径宁多报不漏报 |
+> | 趋势 | `db/smoke.ts` `trend()` | **仅 `head`** | `GET …/smoke/trend` |
+>
+> 关键差异：**L1 从 v0.2.22 起不再把 `head` 计入健康**。`head` 是诊断性探测，mg/tx 等平台 CDN 常拒 HEAD（405/410/502）而 GET 正常，计入会把实际下载 100% 成功的源误判为 `allRecentFailed` 而降权（修正前的 qdy 实例）。因此一个源可以「矩阵显示 red / 触发告警」却仍被 L1 当作健康源优先使用——这是**有意为之**，不是不一致。L2 熔断与上述四者完全无关（纯进程内存连续失败计数，不读 `smoke_results`）。机制详见 `docs/DEVELOPMENT.md` 「音源质量闸门 L1/L2/L3」。
 
 ### GET /api/v1/health/smoke
 

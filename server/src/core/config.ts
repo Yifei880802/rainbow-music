@@ -51,7 +51,7 @@ export interface RoConfig {
     dir: string
     hotReload: boolean
     // ── P2 音源健康编排与限速（L1/L2/L3，全部可选；yaml 未提供时代码侧用默认值）──
-    healthAware?: boolean       // L1: 按 smoke_results 近期成功率对候选音源排序（全失败源降权），默认 true
+    healthAware?: boolean       // L1: 按 smoke_results 近期成功率对候选音源排序（全失败源降权），默认 true；成功率只算 search/musicUrl 两个关键步骤（v0.2.22）
     circuitThreshold?: number   // L2: 同一音源窗口内连续失败 ≥K 次即熔断临时剔除，默认 5
     circuitWindowMs?: number    // L2: 熔断统计滑动窗口（ms），默认 300000（5min）
     ratePerMin?: number         // L3: 每音源每分钟 callAction 上限（0=不限速），默认 0；与全局 rateLimit 协同

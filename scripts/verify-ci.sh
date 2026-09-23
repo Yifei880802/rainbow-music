@@ -18,7 +18,12 @@
 #                  server/test/*.test.ts，跑 esbuild --format=esm 转译后该 import 行必须仍在
 #               ② DB_CANARY：test 段跑完后仓库 data/ro.db 的 sha256 必须与跑前逐字符一致，
 #                  且不得新增 ro.db-wal / ro.db-shm（原本不存在时不得被创建）
-#               依赖缺失（无 esbuild / 无 sha256 工具）或有进程正持有真机库时降级 SKIP，不误红
+#               esbuild 解析为**三级候选**，全落空 = 环境异常 → **硬红 FAIL**（v0.2.22 起与
+#               build.yml 真同构）；仅「无 sha256 工具 / 有进程持真机库 / 无沙箱测试文件」才 SKIP：
+#                 ① tsx 自带的嵌套副本（与 `npm test` = `tsx --test` 实际转译器同源，判定最忠实）
+#                 ② node_modules/.bin/esbuild（v0.2.21 及之前由 drizzle-kit 传递带入 0.19.12；
+#                    v0.2.22 移除 drizzle 死依赖后此候选恒落空，保留只为兼容显式装了 esbuild 的现场）
+#                 ③ npx --no-install esbuild（只用已装好的，绝不联网拉包）
 #   d. docker ：docker buildx build --platform $PLATFORM -t ${FPK_IMAGE}:${image_tag} --load .（可 --skip-docker 跳过）
 #   e. fpk    ：注入 FPK_VERSION / FPK_IMAGE / FPK_IMAGE_TAG / FPK_IMAGE_DIGEST 调
 #               scripts/build-fpk.sh，解包产物并程序化校验 compose 内 image 与预期引用
@@ -281,6 +286,29 @@ stage_test() {
 # 两段护栏互为编译期/运行期双证据：
 #   ① SANDBOX_ELISION —— 源里 import 了沙箱的文件，esbuild 转译产物必须仍含该 import 行
 #   ② DB_CANARY       —— test 段跑完后真机 data/ro.db 必须字节未变、无 -wal/-shm 新增
+#
+# v0.2.22 修正（**两处**；第二处由发布前 CodeReview 补出，属对「同构」的过度声明订正）：
+#
+# ① **候选解析**：esbuild 原先是单候选硬编码 `server/node_modules/.bin/esbuild`，而那份 0.19.12
+#    是 drizzle-kit 的传递依赖。移除 drizzle 死依赖后该路径消失 → 改为与 build.yml 同构的三级
+#    候选，并打印实际选中的转译器与其版本作为证据行。
+# ② **兜底语义**：只做 ① **并不构成同构**。三级候选全落空时，此处原先只 `log SANDBOX_ELISION_SKIP`
+#    且 `rc_iso` 保持 0，而 `run_stage` 的口径是「rc==2 才记 SKIP、rc==0 记 PASS」→ 本段被记为
+#    **PASS**，连 SKIP_COUNT 告警都不触发；而 build.yml 同场景是 `::error::` + `exit 1` **硬红**。
+#    也就是说 ① 只**降低了触发 SKIP 的概率**，并未改变「缺失即静默 PASS」这个本节自己点名为 bug
+#    的语义 —— 护栏仍会变装饰，只是更难触发（与 v0.2.19 烧号同一类漏检面）。故补上真同构的兜底：
+#    全落空 = npm ci 没装 devDependencies = 环境异常 → `rc_iso=1` 硬红；另补 build.yml 的汇总证据行
+#    `checked=/elided=/unverifiable=`，使两侧日志可逐项对照。
+#
+# 仍保留 SKIP 的三种情形（对齐 build.yml 的 `::warning::` 一侧，**不是**漏检 —— 语义是「护栏无从
+# 行使」而非「护栏被静默跳过」）：① 无 sha256 工具；② 有进程正持有真机 data/ro.db（会被合法写入，
+# 比对无意义）；③ `server/test` 不存在、或其中没有任何文件 import fixtures/env-sandbox（checked=0，
+# build.yml 同场景也只 `::warning::…护栏本轮为空转`）。
+#
+# 硬红不会误红正常门禁：一级候选 `server/node_modules/tsx/node_modules/esbuild/bin/esbuild` 与
+# `npm test`（= `tsx --test`）同源，本地实测可执行且 `--version` = 0.28.1、对真实沙箱测试文件
+# `--format=esm` 转译 rc=0 且产物保留 env-sandbox import；CI 侧 `npm ci` 装 devDependencies 必得同一份。
+# 二级候选 `node_modules/.bin/esbuild` 实测**已不存在**（drizzle-kit 移除后恒落空，与 ① 的判断一致）。
 
 sha256_of() { # sha256_of <file> → 64 位小写 hex（GNU sha256sum / BSD shasum 双兼容）
     if command -v sha256sum >/dev/null 2>&1; then
@@ -332,7 +360,24 @@ isolation_snapshot() { # 恒定返回 0：快照取不到只降级为 SKIP，绝
 }
 
 stage_isolation() {
-    local esbuild="$REPO_ROOT/server/node_modules/.bin/esbuild"
+    # esbuild 三级候选（与 build.yml 的 SANDBOX_ELISION 护栏**真同构**：候选顺序、证据行、汇总行、
+    # 以及「全落空即硬红」的兜底语义四项全部对齐，详见上方 v0.2.22 修正 ①②）。
+    # 选中结果存进数组 esb_cmd（③ 是多词的 npx 调用，故用数组而非字符串，避免引号/分词坑）。
+    local -a esb_cmd=()
+    local esbuild_label="" c
+    for c in \
+        "$REPO_ROOT/server/node_modules/tsx/node_modules/esbuild/bin/esbuild" \
+        "$REPO_ROOT/server/node_modules/.bin/esbuild"; do
+        if [[ -x "$c" ]]; then
+            esb_cmd=("$c")
+            esbuild_label="${c#"$REPO_ROOT"/}"
+            break
+        fi
+    done
+    if [[ ${#esb_cmd[@]} -eq 0 ]] && (cd "$REPO_ROOT/server" && npx --no-install esbuild --version >/dev/null 2>&1); then
+        esb_cmd=(npx --no-install esbuild)
+        esbuild_label="npx --no-install esbuild"
+    fi
     # 源文件判定模式与转译产物判定模式**同形**：以 import 开头且路径含 fixtures/env-sandbox。
     # 同形是关键——「源里怎么写的，转译后就该还在」，不依赖 esbuild 的注释处理行为。
     local pat='^[[:space:]]*import[[:space:]].*fixtures/env-sandbox'
@@ -340,11 +385,21 @@ stage_isolation() {
     local now_exists now_hash
 
     # ── ① SANDBOX_ELISION：编译期护栏 ─────────────────────────────────────
-    if [[ ! -x "$esbuild" ]]; then
-        log "${C_YELLOW}SANDBOX_ELISION_SKIP：未找到可执行的 server/node_modules/.bin/esbuild（先 npm ci）${C_NC}"
+    if [[ ${#esb_cmd[@]} -eq 0 ]]; then
+        # 与 build.yml **真同构**的兜底：三级候选全落空 = npm ci 没装 devDependencies = 环境异常
+        # → rc_iso=1 硬红（对齐 build.yml 的 ::error:: + exit 1）。改前这里只 log SKIP 且 rc_iso
+        # 保持 0，而 run_stage 是「rc==2 才记 SKIP、rc==0 记 PASS」→ 本段被记为 PASS，连
+        # SKIP_COUNT 告警都不触发。详见上方 v0.2.22 修正 ②。
+        log "${C_RED}${C_BOLD}SANDBOX_ELISION_FAIL${C_NC}：三级候选均未找到可执行的 esbuild，护栏无法执行 → 按环境异常硬红"
+        log "    后果：沙箱 elision 无从判定，v0.2.19 烧号根因（测试写进真机 data/ro.db）失去编译期拦截"
+        log "    修法：cd server && npm ci —— 一级候选即 tsx 自带的 node_modules/tsx/node_modules/esbuild/bin/esbuild"
+        rc_iso=1
     elif [[ ! -d "$REPO_ROOT/server/test" ]]; then
+        # 仍是 SKIP：build.yml 同场景（test/*.test.ts glob 不匹配 → checked=0）也只 ::warning:: 空转。
         log "${C_YELLOW}SANDBOX_ELISION_SKIP：未找到 server/test 目录${C_NC}"
     else
+        # 证据行：显式打印选中的转译器与版本（对齐 build.yml 的同名输出），便于事后审计
+        log "SANDBOX_ELISION 使用转译器：${esbuild_label}（$(cd "$REPO_ROOT/server" && "${esb_cmd[@]}" --version 2>/dev/null || echo '版本未知')）"
         for f in "$REPO_ROOT"/server/test/*.test.ts; do
             [[ -f "$f" ]] || continue
             # 并非所有 test 文件都用沙箱：只查「源里真的 import 了 env-sandbox」的，避免误红
@@ -352,7 +407,9 @@ stage_isolation() {
             checked=$((checked+1))
             rel="${f#"$REPO_ROOT"/}"
             out=""; esb_rc=0
-            out="$("$esbuild" --format=esm "$f" 2>/dev/null)" || esb_rc=$?
+            # cd 到 server/ 再转译：候选 ③ 的 npx 需在该目录才能解析到本地 node_modules；
+            # 候选 ①② 是绝对路径，cd 不影响；$f 亦为绝对路径。
+            out="$(cd "$REPO_ROOT/server" && "${esb_cmd[@]}" --format=esm "$f" 2>/dev/null)" || esb_rc=$?
             if [[ $esb_rc -ne 0 ]]; then
                 # esbuild 自身转译失败 → 给不出结论，记为不可验证（语法问题由 test 段的 tsx 另行暴露）
                 unverifiable=$((unverifiable+1))
@@ -368,7 +425,10 @@ stage_isolation() {
                 log "    修法：改为裸副作用 import —— import './fixtures/env-sandbox.js'（对齐 download-m1.test.ts）"
             fi
         done
+        # 汇总证据行（对齐 build.yml 的同名输出，使本地与 CI 两侧日志可逐项对照）
+        log "SANDBOX_ELISION 汇总：checked=${checked} elided=${elided} unverifiable=${unverifiable}"
         if [[ $checked -eq 0 ]]; then
+            # 仍是 SKIP：对齐 build.yml 的「::warning:: …护栏本轮为空转」（无从行使，非静默跳过）
             log "${C_YELLOW}SANDBOX_ELISION_SKIP：server/test/*.test.ts 中没有任何文件 import fixtures/env-sandbox${C_NC}"
         elif [[ $elided -gt 0 ]]; then
             log "${C_RED}${C_BOLD}SANDBOX_ELISION_FAIL${C_NC}：${elided}/${checked} 个沙箱测试文件的 env-sandbox import 被 elide"

@@ -8,6 +8,7 @@
 
 - [仓库结构](#仓库结构)
 - [后端架构（server/src）](#后端架构serversrc)
+- [音源质量闸门 L1/L2/L3](#音源质量闸门-l1l2l3)
 - [前端结构（web/）](#前端结构web)
 - [fpk 打包层](#fpk-打包层)
 - [配置系统与性能加固项](#配置系统与性能加固项)
@@ -61,7 +62,7 @@ src/
 │   ├── search/            # 搜索服务：单平台 + aggregate 聚合
 │   ├── orchestrator/      # 取 URL 两段式编排 + 跨平台换源兜底
 │   ├── download/          # 下载队列（p-queue）、tag-worker（元数据嵌入 worker）
-│   ├── db/                # better-sqlite3 + drizzle-orm（任务/歌单/冒烟表）
+│   ├── db/                # better-sqlite3 直连（任务/歌单/冒烟表；无 ORM，SQL 写在 db/*.ts）
 │   ├── notify/            # Bark + Server酱 告警
 │   └── smoke/             # 健康冒烟测试 + cron scheduler
 └── routes/                # REST 路由（auth/search/download/tasks/playlists/sources/settings/sse/health/status）
@@ -77,6 +78,43 @@ src/
 | 原生模块容器内编译 | better-sqlite3 / sharp 在 builder 阶段（node:22-bookworm，含工具链）编译，运行阶段 node:22-bookworm-slim |
 
 **换源兜底流程**（`orchestrator`）：主平台音质降级链 `flac24bit → flac → 320k → 128k` 全失败 → `findMusic` 跨平台匹配同款 → 逐候选平台各试一次（对齐 lx-music 原版 `retryedSource`）。换源命中后：歌词/封面走实际命中平台，曲目信息保留原曲，任务标记 `completed_with_warnings`。
+
+---
+
+## 音源质量闸门 L1/L2/L3
+
+> 本节是 L1/L2/L3 的**权威描述**（以代码为准）；其它文档若与此不符，以此节为准。v0.2.22 核对。
+
+三层闸门只在**一处**接入取链编排：`orchestrator/index.ts` 的候选音源筛选。
+
+```ts
+if (config.sources.healthAware === false) return base
+const health = computeSourceHealth()
+return filterCircuitOpen(orderByHealth(base, health))
+```
+
+| 层 | 实现 | 数据来源 | 默认 | 语义 |
+|---|---|---|---|---|
+| **L1** 健康排序 | `source-engine/source-health.ts` 的 `computeSourceHealth()` + `orderByHealth()` | **SQLite `smoke_results` 表**（持久化，30s 内存缓存） | `sources.healthAware=true` | 取近 `HEALTH_SAMPLE_RUNS=5` 轮冒烟 run，算成功率；`allRecentFailed`（5 轮全败）的源被**装饰-排序-还原**移到候选末尾（不剔除，仍可用） |
+| **L2** 熔断 | 同文件的 `SourceCircuitBreaker` 类 + 全局单例 `sourceCircuit` | **进程内存 `Map<sourceId, number[]>`** | `circuitThreshold=5`、`circuitWindowMs=300000` | 窗口内**连续**失败 ≥K 次即熔断（`recordSuccess` 立即清空该源计数）；`filterCircuitOpen` 剔除已熔断源，**若剔空则回退原候选**（事实上的 half-open） |
+| **L3** 限速 | `source-engine/index.ts` 的 `acquireSourceToken()` | 进程内存令牌桶 | `ratePerMin=0`（**禁用**） | 每音源一个桶，容量 `max(1, ceil(ratePerMin/6))`；`ratePerMin<=0` 直接放行 |
+
+**L2 熔断器的三条重要事实**（常被误述，务必以此为准）：
+
+1. **纯进程内存态，无持久化**——没有 `source_health` 表，服务重启即清零；
+2. **无独立半开计时器**——半开是靠「`filterCircuitOpen` 剔空后回退原候选」+「`isOpen` 顺带老化窗口外时间戳」两个副作用合成的，不存在 `halfOpenMs` 之类配置；
+3. **与 L1 完全解耦**——`SourceCircuitBreaker` 只读自己的内存 `fails` Map，不读 `smoke_results`、不调 `computeSourceHealth()`。L1 判某源健康，它照样可以被熔断。
+
+**L1 聚合口径（v0.2.22 修正）**：只统计 `search` / `musicUrl` 两个关键步骤（常量 `HEALTH_STEPS`）。冒烟五步（`search`/`musicUrl`/`head`/`lyric`/`pic`，见 `db/smoke.ts` 的 `SmokeStep`）里另外三步**不代表真实解析与下载能力**：
+
+- `head` 是诊断性探测——mg/tx 等平台 CDN 常拒 HEAD（405/410/502）而 GET 正常；
+- `lyric` / `pic` 是附属元数据，缺失不影响取链与下载。
+
+修正前用**无 `WHERE` 的 `MIN(ok)` 跨全部五步**聚合，实测后果：musicUrl 95/95 零失败、真实下载 127/127 全成功的 qdy，仅因 head 在 mg/tx 被拒就被判 `allRecentFailed`，被健康排序降到候选末尾。回归测试见 `server/test/source-health-l1.test.ts`。
+
+**已知盲区（刻意未改）**：`db/smoke.ts` 的 `recentRunsOutcome()`（健康页「连续失败」告警口径）同样是无 step 过滤的 `MIN(ok)`。它是**告警**而非**排序**，宽口径宁可多报不可漏报，故保留原样；阅读告警时须知 head 失败会计入。
+
+**不存在的机制**（文档/issue 里若出现即为误述）：没有「429/403 自动降并发」。上游 429 走 `TransientHttpError` → 退避重试 / 换源；错误码归 `ERR_HTTP_4XX`（呈现用），与 L1/L2/L3 是两套互不替代的东西。分级（F1）与错误码（M1）亦互不替代。
 
 ---
 
