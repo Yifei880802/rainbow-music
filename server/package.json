@@ -1,12 +1,12 @@
 {
   "name": "rainbow-server",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "description": "Rainbow — headless music download service (based on lx-music source ecosystem)",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -22,7 +22,7 @@
     "check-disk-space": "^3.4.0",
     "fastify": "^5.2.0",
     "flac-tagger": "^1.0.8",
-    "music-metadata": "^7.14.0",
+    "music-metadata": "^11.16.0",
     "needle": "^3.3.1",
     "node-cron": "^4.6.0",
     "node-id3": "^0.2.9",

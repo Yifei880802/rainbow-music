@@ -281,4 +281,62 @@ describe('C1: music-metadata parseFile 真实码率/格式检测', () => {
       // 测试通过
     }
   })
+
+  // v0.2.24：music-metadata 7→11 后 IPicture.data 由 Buffer 变为 Uint8Array，
+  // scanner-worker.ts 的封面落盘 writeFile(pic.data) 是唯一破坏点。此用例合成带
+  // ID3v2.3 APIC(front cover) 帧的最小 MP3，验证 v11 解析出的 data 为 Uint8Array、
+  // 且按 scanner-worker 原样 writeFile 后逐字节保真（magic=ffd8ff）。
+  test('封面 picture 写入路径回归：v11 data 为 Uint8Array，writeFile 后 magic=ffd8ff', async () => {
+    const musicMetadata = await import('music-metadata')
+    const synchsafe = (n: number) =>
+      Buffer.from([(n >> 21) & 0x7f, (n >> 14) & 0x7f, (n >> 7) & 0x7f, n & 0x7f])
+    const be32 = (n: number) => {
+      const b = Buffer.alloc(4)
+      b.writeUInt32BE(n >>> 0, 0)
+      return b
+    }
+    // 极简 JPEG：SOI + APP0(JFIF) + EOI，前 3 字节 = ff d8 ff
+    const jpeg = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00,
+      0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xd9,
+    ])
+    const apicBody = Buffer.concat([
+      Buffer.from([0x00]), // text encoding: ISO-8859-1
+      Buffer.from('image/jpeg\0', 'latin1'), // MIME (null-terminated)
+      Buffer.from([0x03]), // picture type: front cover
+      Buffer.from([0x00]), // empty description
+      jpeg,
+    ])
+    const apic = Buffer.concat([
+      Buffer.from('APIC', 'latin1'),
+      be32(apicBody.length), // v2.3 frame size = big-endian
+      Buffer.from([0x00, 0x00]),
+      apicBody,
+    ])
+    const id3 = Buffer.concat([
+      Buffer.from('ID3', 'latin1'),
+      Buffer.from([0x03, 0x00]), // v2.3.0
+      Buffer.from([0x00]),
+      synchsafe(apic.length),
+      apic,
+    ])
+    const frameHeader = Buffer.from([0xff, 0xfb, 0x90, 0x00])
+    const frameBody = Buffer.alloc(417 - 4, 0x00)
+    const frames = Buffer.concat([frameHeader, frameBody, frameHeader, frameBody, frameHeader, frameBody])
+    const coverMp3 = path.join(SANDBOX_ROOT, 'c1-fixtures', 'test-cover.mp3')
+    fs.writeFileSync(coverMp3, Buffer.concat([id3, frames]))
+
+    const mm = await musicMetadata.parseFile(coverMp3, { duration: true })
+    const pic = mm.common.picture?.[0]
+    assert.ok(pic, 'APIC-embedded MP3 应解析出 picture[0]')
+    assert.ok(pic!.data instanceof Uint8Array, 'v11 picture.data 应为 Uint8Array')
+    assert.ok(pic!.data.length > 0, 'picture.data 长度应 > 0')
+
+    // 按 scanner-worker.ts 原样 writeFile（不做任何 Buffer 转换）
+    const outPath = path.join(SANDBOX_ROOT, 'c1-fixtures', 'cover-out.jpg')
+    await fs.promises.writeFile(outPath, pic!.data)
+    const back = fs.readFileSync(outPath)
+    assert.equal(back.subarray(0, 3).toString('hex'), 'ffd8ff', 'writeFile 后 JPEG magic 应保持 ffd8ff')
+    assert.equal(back.length, pic!.data.length, 'writeFile 应逐字节保真')
+  })
 })

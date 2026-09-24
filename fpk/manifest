@@ -1,5 +1,5 @@
 appname=com.rainbow.music
-version=0.2.23
+version=0.2.24
 display_name=Rainbow 音乐下载
 desc=Rainbow 音乐下载服务：多音源聚合搜索、FLAC/MP3 无损下载、自动刮削元数据（封面/歌词/标签）、每日健康冒烟自检。Docker 容器运行，数据全部落在飞牛托管目录。
 # App Center「已安装」卡片的分类副标题数据源是 appcenter 库 app.tags 列（fnOS 规范
@@ -22,4 +22,4 @@ desktop_applaunchname=com.rainbow.music.Application
 service_port=0
 checkport=false
 ctl_stop=true
-changelog=本次为依赖维护更新，升级无需重新配置，已有数据与已下载文件不受影响。核心变更：图像处理库 sharp 从 0.33.5 升级到 0.35.4，内置的 libvips 图像引擎同步升级到 8.18.6；sharp 在本服务中唯一的用途是下载完成后把封面原图统一缩放为正方形 JPEG 再嵌入音频文件标签，新版的破坏性变更均未触及 resize+jpeg 这一用法，封面缩放行为不变、无需改动任何源码。分发方式变化：新版 sharp 改用按平台预编译的 @img/sharp-* 二进制包（如 linux/amd64 用 @img/sharp-linux-x64、linux/arm64 用 @img/sharp-linux-arm64，配套 @img/sharp-libvips-* 1.3.3）取代旧版安装时本地编译（install script + node-gyp）的方式，安装更快更稳、不再依赖目标机的编译工具链。验证情况：linux/amd64 与 linux/arm64 两个架构均已通过 docker buildx 双架构构建预演，npm install 无 UNMET/peer/GLIBC/node-gyp 报错，运行时 require('sharp') 与 resize+jpeg 冒烟在两架构均通过；基础镜像 node:22-bookworm（glibc 2.36）满足新版要求，Dockerfile 无需改动。文档侧：订正上一版变更日志 CHANGELOG-0.2.22.md 中的一处手写笔误——package-lock.json 的净减行数由 1129 订正为实测真值 1292（+65/−1357）。
+changelog=本次为依赖维护更新，升级无需重新配置，已有数据与已下载文件不受影响。核心变更：音频元数据解析库 music-metadata 从 7.14.0 升级到 11.16.0（连带传递依赖 file-type 16.5.4→21.3.4），清除该链上的 2 个生产环境安全漏洞（music-metadata high + file-type moderate），npm audit --omit=dev 由 2 降为 0；这是自 v0.2.21 起连续顺延的 5 个 DEFER major 依赖升级的最后一个，至此生产依赖 DEFER 清单清空。music-metadata 在本服务中用于下载完成后读回真实码率/编码/采样率、以及媒体库扫描时解析标签与封面；v11 的这些用法与 v7 完全兼容（封面 data 类型由 Buffer 变为 Uint8Array，但落盘写入天然兼容，封面字节与旧版逐字节一致），无需改动任何源码。运行时对齐：CI 构建与单测的 Node 版本从 20 升到 22，与 node:22-bookworm 运行镜像一致，消除既有的引擎版本告警；server 声明的 engines.node 同步提到 >=22。基础镜像与 Dockerfile 无需改动。

@@ -67,7 +67,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   # ─────────────────────────────────────────────
-  # ② typecheck + build（Node 20）
+  # ② typecheck + build（Node 22，与运行时镜像 node:22-bookworm 对齐）
   # ─────────────────────────────────────────────
   build:
     name: Typecheck + 编译
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
       - name: 安装依赖并编译
@@ -87,7 +87,7 @@ jobs:
           npm run typecheck && npm run build
 
   # ─────────────────────────────────────────────
-  # ②b 单元测试（Node 20，与 build 并行；任一用例失败即门禁不通过，
+  # ②b 单元测试（Node 22，与 build 并行；任一用例失败即门禁不通过，
   #     docker 作业同时依赖两者，测试不过不会推镜像/出包）
   #
   #     v0.2.21：在 npm test **之前**插入「沙箱隔离护栏 SANDBOX_ELISION」step，
@@ -106,7 +106,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
       - name: 安装依赖
